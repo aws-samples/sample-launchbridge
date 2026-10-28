@@ -600,8 +600,10 @@ export async function copyDirRecursive(source, target, options = {}) {
 }
 
 /**
- * Merges refreshed per-folder external digests (`shared/<skill>` keys) over
- * the recorded ones.
+ * Merges refreshed external digests (`<agent>/<skill>` keys) over the recorded
+ * ones. A `shared/<skill>` digest from an older install, one digest for every
+ * agent, is dropped once the skill has refreshed per-agent digests: it no
+ * longer matches the adapted copies.
  *
  * Returns undefined when neither side has any, so an install with no external
  * skills does not gain an empty object in its manifest.
@@ -611,7 +613,11 @@ export async function copyDirRecursive(source, target, options = {}) {
  * @returns {Record<string, string>|undefined}
  */
 function mergeExternalFolderHashes(existing, refreshed) {
-    const merged = { ...(existing || {}), ...refreshed };
+    const merged = { ...(existing || {}) };
+    for (const key of Object.keys(refreshed)) {
+        delete merged[`shared/${key.slice(key.indexOf('/') + 1)}`];
+    }
+    Object.assign(merged, refreshed);
     return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
@@ -1015,7 +1021,7 @@ export async function runPostPullSync(sourcePath, targetRepo, ui) {
 
     // ── 5d. Sync external (non-native) skills via their provider ──────────────
     // External skills (e.g. ai-skills) are tracked at the domain level
-    // (`ai-domain-*` group keys, `shared/<skill>` folder digests) and handled
+    // (`ai-domain-*` group keys, `<agent>/<skill>` folder digests) and handled
     // entirely by the provider, keeping this native updater agnostic.
     let externalNewHashes = {};
     let externalNewFolderHashes = {};
@@ -1101,9 +1107,8 @@ export async function runPostPullSync(sourcePath, targetRepo, ui) {
             gitCommitHash: newGitHash || manifest.gitCommitHash,
             skillHashes: { ...oldHashes, ...newHashes, ...externalNewHashes },
             // Merged rather than replaced: updateAiSkills only reports the skills
-            // it found installed, so a `shared/<skill>` digest it could not see
-            // must keep the value it already had instead of dropping out of
-            // the check.
+            // it found installed, so a digest it could not see must keep the
+            // value it already had instead of dropping out of the check.
             externalSkillHashes: mergeExternalFolderHashes(
                 manifest.externalSkillHashes,
                 externalNewFolderHashes

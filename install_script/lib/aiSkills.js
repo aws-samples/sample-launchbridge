@@ -6,9 +6,15 @@
  * Integrates the `ai-skills` git submodule (project_dependencies/ai-skills,
  * the public sample-ai-skills library) into the LaunchBridge installer.
  *
- * Layout: one agent-agnostic tree, `<submodule>/skills/<domain>/<skill>/`,
- * where every skill directory holds a SKILL.md. Every agent installs the same
- * folder into its own skills dir, so there is no per-agent source variant.
+ * Layout: `<submodule>/skills/<domain>/<skill>/`, where every skill directory
+ * holds a SKILL.md written for Claude Code. Every agent installs the same
+ * folder into its own skills dir. Claude Code gets it unchanged. Every other
+ * agent gets it with its own SKILL.md (`adaptSkillMd`), as the ai-skills
+ * installer writes it for Kiro, Codex and pi: the frontmatter keeps the fields
+ * that agent reads, invocations use its syntax, and the declarations it does
+ * not enforce are restated in the body. Codex also gets an `agents/openai.yaml`
+ * for each explicit-only skill. Cline, Roo Code and other agents get the Kiro
+ * form, naming the agent.
  *
  * Bundles are derived from the tree, not from name prefixes: each domain
  * becomes one selectable category with group id `ai-domain-<domain>`
@@ -27,9 +33,9 @@
  * domain level: setup_status.md shows one row per domain and the version
  * manifest stores one content hash per `ai-domain-<domain>` key. Group hashes
  * drive upgrades only; they cannot verify an installed directory. The manifest
- * also records one `shared/<skill>` digest per installed skill folder
- * (`computeAiSkillFolderHashes`), which is what `verify_integrity.py` checks
- * in every agent's skills dir.
+ * also records one `<agent>/<skill>` digest per agent and skill
+ * (`computeAiSkillFolderHashes`), the content the installer gives that agent,
+ * which is what `verify_integrity.py` checks in that agent's skills dir.
  */
 
 import crypto from 'crypto';
@@ -39,7 +45,8 @@ import path from 'path';
 import { safePathJoin, sanitizePathComponent } from './pathSanitizer.js';
 import { discoverSkills, validateSkillStructure } from './skillDiscovery.js';
 import { computeContentHash } from './contentHash.js';
-import { copySkill } from './installer.js';
+import { copySkill, createSymlink } from './installer.js';
+import { AGENTS } from './agentConfig.js';
 
 /** Path to the ai-skills submodule, relative to the LaunchBridge source root. */
 export const AI_SUBMODULE_REL = path.join('project_dependencies', 'ai-skills');
@@ -48,22 +55,40 @@ export const AI_SUBMODULE_REL = path.join('project_dependencies', 'ai-skills');
 export const AI_GROUP_PREFIX = 'ai-domain-';
 
 /**
- * ai-skills domains LaunchBridge does not offer. `semantic-release` (the
- * `ai-release` skill) writes CI jobs and release scripts for hosting
+ * ai-skills domains LaunchBridge does not offer. `release` (the
+ * `ai-scaffold-release` skill) writes CI jobs and release scripts for hosting
  * platforms; it is available directly from aws-samples/sample-ai-skills.
  */
-export const EXCLUDED_AI_DOMAINS = new Set(['semantic-release']);
+export const EXCLUDED_AI_DOMAINS = new Set(['release']);
 
 /** Display labels for known domains. Unknown domains get `AI Skills: <domain>`. */
 export const AI_DOMAIN_LABELS = {
+    adr: 'AI Architecture Decisions',
+    agents: 'AI Agent Context',
+    dev: 'AI Development Process',
+    'human-docs': 'AI Prose Documents',
     research: 'AI Spec-Driven Development',
+    'software-docs': 'AI Software Documentation',
 };
 
 /** Descriptions for known domains. Unknown domains list their skill names. */
 export const AI_DOMAIN_DESCRIPTIONS = {
+    adr: 'Architecture decision log: /ai-adr stands it up, then writes records and moves them through propose, accept and decline',
+    agents: 'Agent context: /ai-agent-context (CLAUDE.md and README.md for a source directory), /ai-scaffold-agents-md (AGENTS.md as the single source), /ai-make-skill (write a new skill)',
+    dev: 'How the repository is developed: /ai-scaffold-dev-context, /ai-scaffold-dev-templates (issue, merge request and review templates), /ai-dev-issue (file an issue), /ai-dev-autopr (a spec or issue to a merge-ready pull or merge request)',
+    'human-docs':
+        'Documents for people: /ai-human-outline → /ai-human-draft, and export to Word, PDF and Excel with /ai-human-docx, /ai-human-pdf and /ai-human-xlsx (these need uv)',
     research:
         'Spec-driven development: /ai-create → /ai-research → /ai-plan → /ai-implement → /ai-archive, plus the ai-workflow orchestrator',
+    'software-docs':
+        'Documentation tree: /ai-doc (file pages by Diátaxis mode), /ai-scaffold-docusaurus-site (scaffold a Docusaurus 3 site)',
 };
+
+/**
+ * The agent the ai-skills SKILL.md files are written for. It gets them
+ * unchanged; every other agent gets its own copy (`adaptSkillMd`).
+ */
+const CLAUDE_AGENT = 'claude';
 
 /**
  * Native LaunchBridge skills bundled into a domain's category. They are only
@@ -87,9 +112,387 @@ const REFERENCES_DIR = 'references';
  * @property {string} group - Group id, `ai-domain-<domain>`
  * @property {boolean} isAiSkill - Always true (marker for the install loop)
  * @property {string} path - Source directory, installed for every agent
+ * @property {Map<string, Map<string, Buffer>>} variants - For every agent but
+ *   Claude Code, by AGENT_ADAPTERS id: the files whose bytes replace or join
+ *   the source folder's, by relative path (SKILL.md, and Codex's
+ *   agents/openai.yaml for an explicit-only skill)
  * @property {boolean} hasReferences
  * @property {boolean} hasScripts
  */
+
+// ── SKILL.md for agents other than Claude Code ───────────────────────────────
+//
+// A port of the ai-skills installer's agent adapters (installer/ai_skills/
+// frontmatter.py, agents/__init__.py, agents/kiro.py, agents/codex.py and
+// agents/pi.py at the pinned tag). The frontmatter is filtered by whole
+// top-level entries and never re-serialized, so every byte that is kept is the
+// source's own. Only the fields the adapters read are parsed, and a SKILL.md
+// whose fields take a form this parser does not handle is refused, so a
+// declaration is never dropped silently.
+
+/** Fields every agent's copy keeps. */
+const REQUIRED_FIELDS = ['name', 'description'];
+
+/** The fields the ai-skills installer keeps for Kiro, Codex and OpenCode. */
+const SPEC_FIELDS = ['license', 'compatibility', 'metadata'];
+
+/**
+ * How each agent's copy differs from the source, keyed by agent name. Claude
+ * Code, which the skills are written for, gets the source unchanged.
+ *   - `label`: the agent the "Tool restrictions" section names.
+ *   - `keep`: frontmatter fields kept besides `name` and `description`.
+ *   - `explicitOnlyInBody`: an explicit-only skill says so in the body.
+ *   - `invoke`: how the agent invokes a skill, when it is not `/<name>`.
+ *   - `policyFile`: an explicit-only skill gets Codex's `agents/openai.yaml`.
+ * Kiro, Codex and pi follow the installer's adapters for them. The installer
+ * has none for Cline, Roo Code and other agents; they get the Kiro form,
+ * naming the agent.
+ */
+const AGENT_ADAPTERS = {
+    kiro: { label: 'Kiro', keep: SPEC_FIELDS, explicitOnlyInBody: true },
+    codex: {
+        label: 'Codex',
+        keep: SPEC_FIELDS,
+        invoke: (name) => `$${name}`,
+        policyFile: true,
+    },
+    pi: {
+        label: 'pi',
+        keep: [...SPEC_FIELDS, 'allowed-tools', 'disable-model-invocation'],
+        invoke: (name) => `/skill:${name}`,
+    },
+    cline: { label: 'Cline', keep: SPEC_FIELDS, explicitOnlyInBody: true },
+    roo: { label: 'Roo Code', keep: SPEC_FIELDS, explicitOnlyInBody: true },
+    other: { label: 'This agent', keep: SPEC_FIELDS, explicitOnlyInBody: true },
+};
+
+/** Where Codex reads a skill's invocation policy, relative to the skill. */
+const POLICY_FILE = 'agents/openai.yaml';
+
+/** A top-level frontmatter entry starts with `key:` in column 0. */
+const FIELD_PATTERN = /^([A-Za-z0-9_-]+):/;
+
+/**
+ * A field the adapter reads, in a key form YAML accepts but FIELD_PATTERN does
+ * not see (`"key":`, `key :`, `? key`). Grouped as part of the previous entry,
+ * it would be kept or dropped with that entry and never restated.
+ */
+const HIDDEN_READ_FIELD =
+    /^(?:\?\s*)?(["']?)(name|description|disable-model-invocation|disallowed-tools|allowed-tools)\1\s*(?::|$)/;
+
+const INVOCATION_SECTION =
+    '## Invocation\n' +
+    '\n' +
+    'Run this skill only when the user invokes it by name. Do not start it on your own because a' +
+    ' request looks related to what it does.\n';
+
+/** `text` split after each `\r\n`, `\r` or `\n`, as Python's splitlines(keepends=True). */
+function splitLines(text) {
+    return text.match(/[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$/g) ?? [];
+}
+
+/** `line` without its line ending. */
+function stripEol(line) {
+    return line.replace(/[\r\n]+$/, '');
+}
+
+/**
+ * The value of a frontmatter field the adapter reads: `key: value` on one
+ * line, followed by nothing but blank lines. A quoted value must close and
+ * contain no escapes; a plain value is returned as written, and every caller
+ * accepts only an exact literal. Anything else throws.
+ *
+ * @param {{ key: string, lines: string[] }} entry
+ * @returns {{ value: string, quoted: boolean }}
+ */
+function readFieldValue(entry) {
+    const [first, ...rest] = entry.lines;
+    if (rest.some((line) => line.trim() !== '')) {
+        throw new Error(`field "${entry.key}" spans several lines`);
+    }
+    const raw = stripEol(first)
+        .slice(entry.key.length + 1)
+        .trim();
+    if (raw.startsWith('"') || raw.startsWith("'")) {
+        const quote = raw[0];
+        const inner = raw.slice(1, -1);
+        const escaped = quote === '"' ? /["\\]/ : /'/;
+        if (
+            raw.length < 2 ||
+            !raw.endsWith(quote) ||
+            escaped.test(quote === "'" ? inner.replaceAll("''", '') : inner)
+        ) {
+            throw new Error(
+                `field "${entry.key}" has a value this installer cannot read`
+            );
+        }
+        return {
+            value: quote === "'" ? inner.replaceAll("''", "'") : inner,
+            quoted: true,
+        };
+    }
+    return { value: raw, quoted: false };
+}
+
+/**
+ * A tool declaration as its entries: split at commas outside parentheses,
+ * trimmed, empty entries dropped.
+ *
+ * @param {string} value
+ * @returns {string[]}
+ */
+function toolEntries(value) {
+    const entries = [];
+    let depth = 0;
+    let current = '';
+    for (const char of value) {
+        if (char === '(') depth += 1;
+        if (char === ')') depth -= 1;
+        if (char === ',' && depth === 0) {
+            entries.push(current.trim());
+            current = '';
+        } else {
+            current += char;
+        }
+    }
+    entries.push(current.trim());
+    return entries.filter((entry) => entry !== '');
+}
+
+/**
+ * The "Tool restrictions" section for an agent that enforces neither tool
+ * field, or null when the skill declares no tools. `allowed-tools` is a
+ * pre-approval list in Claude Code, not a limit, and is stated as such.
+ *
+ * @param {string[]} denied
+ * @param {string[]} allowed
+ * @param {string} label - The agent the section names
+ * @returns {string|null}
+ */
+function restrictionsSection(denied, allowed, label) {
+    if (denied.length === 0 && allowed.length === 0) {
+        return null;
+    }
+    const lines = [
+        '## Tool restrictions',
+        '',
+        'This skill was written for an agent that enforces the tool declarations in its frontmatter.' +
+            ` ${label} does not enforce them, so they are stated here, and you must follow them` +
+            ' yourself. An entry `Bash(<command>:*)` means any shell command that starts with `<command>`.',
+    ];
+    if (denied.length > 0) {
+        lines.push(
+            '',
+            'Do not use these tools:',
+            '',
+            ...denied.map((entry) => `- \`${entry}\``)
+        );
+    }
+    if (allowed.length > 0) {
+        lines.push(
+            '',
+            "This skill's steps run these commands. The list does not limit which other tools you may use:",
+            '',
+            ...allowed.map((entry) => `- \`${entry}\``)
+        );
+    }
+    return lines.join('\n') + '\n';
+}
+
+/** `text` with `section` added after a blank line. */
+function appendSection(text, section) {
+    return (text.endsWith('\n') ? text : `${text}\n`) + '\n' + section;
+}
+
+/**
+ * `text` with each `/<name>` invocation of a catalog skill replaced by
+ * `invoke(name)`, where the `/` follows no path character and the name ends
+ * there: `/ai-plan` is rewritten, `.claude/skills/ai-plan/` and
+ * `/ai-plan-extra` are not.
+ *
+ * @param {string} text
+ * @param {string[]} names - Every skill name in the submodule
+ * @param {(name: string) => string} invoke
+ * @returns {string}
+ */
+function rewriteInvocations(text, names, invoke) {
+    if (names.length === 0) {
+        return text;
+    }
+    const alternatives = [...names]
+        .sort((a, b) => b.length - a.length)
+        .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+        .join('|');
+    const pattern = new RegExp(
+        `(?<![A-Za-z0-9._/-])/(${alternatives})(?![A-Za-z0-9_-])`,
+        'g'
+    );
+    return text.replace(pattern, (_match, name) => invoke(name));
+}
+
+/**
+ * Codex's invocation policy for an explicit-only skill, as the ai-skills
+ * installer writes it.
+ *
+ * @param {string} name
+ * @returns {string}
+ */
+function policyFileText(name) {
+    return (
+        `# Written by ai-skills: ${name} declares disable-model-invocation, so Codex\n` +
+        '# runs it only when the user invokes it.\n' +
+        'policy:\n' +
+        '  allow_implicit_invocation: false\n'
+    );
+}
+
+/**
+ * Every agent's files for one skill, other than Claude Code's: its SKILL.md
+ * and, for Codex and an explicit-only skill, `agents/openai.yaml`.
+ *
+ * @param {Buffer} source - The SKILL.md as written upstream
+ * @param {string} name - The skill's directory name
+ * @param {string} skillPath - The skill's source directory
+ * @param {string[]} catalogNames - Every skill name in the submodule
+ * @returns {Map<string, Map<string, Buffer>>} By AGENT_ADAPTERS id
+ * @throws {Error} When the SKILL.md cannot be adapted; the message completes
+ *   "SKILL.md …"
+ */
+function adaptSkillMd(source, name, skillPath, catalogNames) {
+    let text;
+    try {
+        // A byte-order mark is kept, so it fails the opening `---` check, as
+        // it does upstream.
+        text = new TextDecoder('utf-8', {
+            fatal: true,
+            ignoreBOM: true,
+        }).decode(source);
+    } catch {
+        throw new Error('is not UTF-8');
+    }
+
+    const lines = splitLines(text);
+    if (lines.length === 0 || stripEol(lines[0]) !== '---') {
+        throw new Error('does not begin with a --- line');
+    }
+    const end = lines.findIndex((line, i) => i > 0 && stripEol(line) === '---');
+    if (end === -1) {
+        throw new Error('has no closing --- line');
+    }
+
+    // Entries: a `key:` line in column 0 and every line after it up to the
+    // next one. Lines before the first key belong to no field and are kept.
+    const entries = [];
+    for (const line of lines.slice(1, end)) {
+        const match = FIELD_PATTERN.exec(line);
+        const hidden = match ? null : HIDDEN_READ_FIELD.exec(stripEol(line));
+        if (hidden) {
+            throw new Error(
+                `writes the field "${hidden[2]}" in a form this installer cannot read`
+            );
+        }
+        if (match || entries.length === 0) {
+            entries.push({ key: match ? match[1] : null, lines: [line] });
+        } else {
+            entries[entries.length - 1].lines.push(line);
+        }
+    }
+    const fields = new Map();
+    for (const entry of entries) {
+        if (entry.key === null) continue;
+        if (fields.has(entry.key)) {
+            throw new Error(`has the field "${entry.key}" twice`);
+        }
+        fields.set(entry.key, entry);
+    }
+
+    if (!fields.has('description')) {
+        throw new Error('has no description');
+    }
+    if (
+        !fields.has('name') ||
+        readFieldValue(fields.get('name')).value !== name
+    ) {
+        throw new Error(`does not give the name "${name}"`);
+    }
+    let explicitOnly = false;
+    if (fields.has('disable-model-invocation')) {
+        const flag = readFieldValue(fields.get('disable-model-invocation'));
+        if (flag.quoted || !['true', 'false'].includes(flag.value)) {
+            throw new Error(
+                'field "disable-model-invocation" is not true or false'
+            );
+        }
+        explicitOnly = flag.value === 'true';
+    }
+    const [denied, allowed] = ['disallowed-tools', 'allowed-tools'].map(
+        (key) => {
+            if (!fields.has(key)) return [];
+            const tools = readFieldValue(fields.get(key));
+            if (!tools.quoted) {
+                throw new Error(`field "${key}" is not a quoted string`);
+            }
+            return toolEntries(tools.value);
+        }
+    );
+    if (
+        explicitOnly &&
+        fs.existsSync(safePathJoin(skillPath, ...POLICY_FILE.split('/')))
+    ) {
+        throw new Error(`has a ${POLICY_FILE} the Codex copy would replace`);
+    }
+
+    const variants = new Map();
+    for (const [id, adapter] of Object.entries(AGENT_ADAPTERS)) {
+        const keep = new Set([...REQUIRED_FIELDS, ...adapter.keep]);
+        const kept = entries
+            .filter((entry) => entry.key === null || keep.has(entry.key))
+            .flatMap((entry) => entry.lines);
+        let output =
+            lines[0] +
+            kept.join('') +
+            lines[end] +
+            lines.slice(end + 1).join('');
+        if (adapter.invoke) {
+            output = rewriteInvocations(output, catalogNames, adapter.invoke);
+        }
+        if (adapter.explicitOnlyInBody && explicitOnly) {
+            output = appendSection(output, INVOCATION_SECTION);
+        }
+        const section = restrictionsSection(denied, allowed, adapter.label);
+        if (section !== null) {
+            output = appendSection(output, section);
+        }
+        const files = new Map([['SKILL.md', Buffer.from(output, 'utf8')]]);
+        if (adapter.policyFile && explicitOnly) {
+            files.set(POLICY_FILE, Buffer.from(policyFileText(name), 'utf8'));
+        }
+        variants.set(id, files);
+    }
+    return variants;
+}
+
+/**
+ * The agent whose copy an agent's skills directory holds. Two agents can share
+ * a directory (pi and "other" both use .agents/skills), and it holds one copy:
+ * that of the first selected agent sharing it, in agentConfig order, so pi's
+ * when pi is selected. Agents without an adapter get the "other" copy.
+ *
+ * @param {string} agent - Agent name
+ * @param {string[]} agents - Every selected agent
+ * @returns {string} 'claude', or an AGENT_ADAPTERS id
+ */
+function copyFor(agent, agents) {
+    const dir = AGENTS[agent]?.skillsDir;
+    const owner =
+        Object.keys(AGENTS).find(
+            (name) => agents.includes(name) && AGENTS[name].skillsDir === dir
+        ) ?? agent;
+    if (owner === CLAUDE_AGENT) {
+        return CLAUDE_AGENT;
+    }
+    return Object.hasOwn(AGENT_ADAPTERS, owner) ? owner : 'other';
+}
 
 /**
  * Reads a directory's entries, or null on any error.
@@ -167,8 +570,9 @@ function listCandidateDirs(dir, kind, onWarn) {
  * Every `skills/<domain>/<skill>/` directory containing a SKILL.md is a skill
  * in group `ai-domain-<domain>`. No deeper nesting is scanned. Native names
  * win a collision; a skill name in several domains is kept from the first
- * domain in sorted order. Returns [] when the submodule is not initialized.
- * Never throws.
+ * domain in sorted order. A skill whose SKILL.md cannot be adapted for the
+ * agents other than Claude Code is skipped with a warning. Returns [] when the
+ * submodule is not initialized. Never throws.
  *
  * @param {string} sourcePath - LaunchBridge source root
  * @param {{ nativeNames?: Set<string>, onWarn?: (msg: string) => void,
@@ -188,6 +592,15 @@ export function discoverAiSkills(
     if (!fs.existsSync(root)) {
         return [];
     }
+
+    // Every skill name in the tree, as in the ai-skills installer's catalog,
+    // excluded domains included: the invocations Codex and pi copies rewrite.
+    const catalogNames = listCandidateDirs(root, 'domain', () => {}).flatMap(
+        (domain) =>
+            listCandidateDirs(domain.path, 'skill', () => {})
+                .filter((skill) => validateSkillStructure(skill.path))
+                .map((skill) => skill.name)
+    );
 
     /** @type {Map<string, AiSkill>} */
     const byName = new Map();
@@ -217,12 +630,27 @@ export function discoverAiSkills(
                 );
                 continue;
             }
+            let variants;
+            try {
+                variants = adaptSkillMd(
+                    fs.readFileSync(safePathJoin(candidate.path, 'SKILL.md')),
+                    candidate.name,
+                    candidate.path,
+                    catalogNames
+                );
+            } catch (err) {
+                onWarn(
+                    `ai-skills: "${candidate.name}" SKILL.md ${err.message}; skipped`
+                );
+                continue;
+            }
             byName.set(candidate.name, {
                 name: candidate.name,
                 domain: domain.name,
                 group: AI_GROUP_PREFIX + domain.name,
                 isAiSkill: true,
                 path: candidate.path,
+                variants,
                 hasReferences: fs.existsSync(
                     safePathJoin(candidate.path, 'references')
                 ),
@@ -429,22 +857,22 @@ export function buildAiStatusRows(
 }
 
 /**
- * Hashes the source folder behind every selected AI skill.
+ * Hashes every copy of every selected AI skill: the source folder, which
+ * Claude Code receives, and the folder with each other agent's files.
  *
  * The single hashing pass both public hash functions are built on, so a group
- * hash and the per-folder digests it covers can never disagree about the bytes
- * they saw. Entry keys are `shared/<skillName>` (`shared/ai-plan`): every agent
- * installs the same folder, and `verify_integrity.py` resolves that key in
- * each agent's skills dir.
+ * hash and the per-agent digests can never disagree about the bytes they saw.
  *
  * @param {string[]} selectedSkills - Actual selected skill names
  * @param {AiSkill[]} aiSkills - Discovered AI skills (provides source paths)
- * @returns {Promise<Map<string, Array<{key: string, hash: string}>>>}
- *   Map of group id → its folder entries, sorted by key.
+ * @param {{ allowedRoot?: string }} [options] - Passed to the content hash
+ * @returns {Promise<Map<string, Array<{name: string, hashes: Map<string, string>}>>>}
+ *   Map of group id → its skills, sorted by skill name, each with the hash of
+ *   every copy by `copyFor` id.
  */
 async function hashAiSkillFolders(selectedSkills, aiSkills, options = {}) {
-    /** @type {Map<string, Array<{key: string, dir: string}>>} */
-    const groupEntries = new Map();
+    /** @type {Map<string, AiSkill[]>} */
+    const groupSkills = new Map();
     const seen = new Set();
 
     for (const name of selectedSkills) {
@@ -454,26 +882,34 @@ async function hashAiSkillFolders(selectedSkills, aiSkills, options = {}) {
         }
         seen.add(name);
         const group = aiTrackingKey(name, aiSkills);
-        if (!groupEntries.has(group)) {
-            groupEntries.set(group, []);
+        if (!groupSkills.has(group)) {
+            groupSkills.set(group, []);
         }
-        groupEntries
-            .get(group)
-            .push({ key: `shared/${name}`, dir: skill.path });
+        groupSkills.get(group).push(skill);
     }
 
-    /** @type {Map<string, Array<{key: string, hash: string}>>} */
+    /** @type {Map<string, Array<{name: string, hashes: Map<string, string>}>>} */
     const hashed = new Map();
-    for (const [group, entries] of groupEntries) {
-        const sorted = entries.sort((a, b) => a.key.localeCompare(b.key));
-        const withHashes = [];
-        for (const { key, dir } of sorted) {
-            withHashes.push({
-                key,
-                hash: await computeContentHash(dir, options),
-            });
+    for (const [group, skills] of groupSkills) {
+        // Code-unit order, so the group hash does not depend on the locale.
+        skills.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        const entries = [];
+        for (const skill of skills) {
+            const hashes = new Map([
+                [CLAUDE_AGENT, await computeContentHash(skill.path, options)],
+            ]);
+            for (const [id, files] of skill.variants) {
+                hashes.set(
+                    id,
+                    await computeContentHash(skill.path, {
+                        ...options,
+                        overrides: files,
+                    })
+                );
+            }
+            entries.push({ name: skill.name, hashes });
         }
-        hashed.set(group, withHashes);
+        hashed.set(group, entries);
     }
 
     return hashed;
@@ -481,14 +917,17 @@ async function hashAiSkillFolders(selectedSkills, aiSkills, options = {}) {
 
 /**
  * Computes one content hash per AI group over the selected AI skills. The
- * hash combines every selected skill folder in the domain, so a change in any
- * of them flips the group hash and triggers a reinstall.
+ * hash covers every agent's copy of every selected skill in the domain, so a
+ * change to any of them flips the group hash and triggers a reinstall. It does
+ * not depend on which agents are selected, but it does depend on
+ * AGENT_ADAPTERS: editing an adapter reinstalls every installed AI skill once.
  *
  * This is an upgrade-detection hash only. It is NOT verifiable against an
  * installed directory — use computeAiSkillFolderHashes for that.
  *
  * @param {string[]} selectedSkills - Actual selected skill names
  * @param {AiSkill[]} aiSkills - Discovered AI skills (provides source paths)
+ * @param {{ allowedRoot?: string }} [options] - Passed to the content hash
  * @returns {Promise<Record<string, string>>} Map of group id → combined hash
  */
 export async function computeAiGroupHashes(
@@ -502,9 +941,11 @@ export async function computeAiGroupHashes(
     const result = {};
     for (const [group, entries] of hashed) {
         const hasher = crypto.createHash('sha256');
-        for (const { key, hash } of entries) {
-            hasher.update(key + '\0');
-            hasher.update(hash);
+        for (const { name, hashes } of entries) {
+            for (const id of [...hashes.keys()].sort()) {
+                hasher.update(`${id}/${name}\0`);
+                hasher.update(hashes.get(id));
+            }
         }
         result[group] = hasher.digest('hex');
     }
@@ -513,19 +954,24 @@ export async function computeAiGroupHashes(
 }
 
 /**
- * Computes a per-folder content hash for every selected AI skill.
+ * Computes the digest of every selected AI skill for every selected agent, as
+ * the installer gives that agent the skill.
  *
- * These are the digests an integrity check can actually verify: each key names
- * one source folder that was copied (or symlinked) into every selected
- * agent's skills dir, so recomputing any installed copy reproduces the value.
+ * These are the digests an integrity check can actually verify: the key
+ * `<agent>/<skill>` names the directory in that agent's skills dir, and
+ * recomputing an installed copy reproduces the value. A copy the installer
+ * left alone or failed to write still gets a digest, so the check reports it.
  *
  * @param {string[]} selectedSkills - Actual selected skill names
  * @param {AiSkill[]} aiSkills - Discovered AI skills (provides source paths)
- * @returns {Promise<Record<string, string>>} Map of `shared/<skillName>` → hash
+ * @param {string[]} agents - Agent names the skills are installed for
+ * @param {{ allowedRoot?: string }} [options] - Passed to the content hash
+ * @returns {Promise<Record<string, string>>} Map of `<agent>/<skillName>` → hash
  */
 export async function computeAiSkillFolderHashes(
     selectedSkills,
     aiSkills,
+    agents,
     options = {}
 ) {
     const hashed = await hashAiSkillFolders(selectedSkills, aiSkills, options);
@@ -533,12 +979,49 @@ export async function computeAiSkillFolderHashes(
     /** @type {Record<string, string>} */
     const result = {};
     for (const entries of hashed.values()) {
-        for (const { key, hash } of entries) {
-            result[key] = hash;
+        for (const { name, hashes } of entries) {
+            for (const agent of agents) {
+                result[`${agent}/${name}`] = hashes.get(copyFor(agent, agents));
+            }
         }
     }
 
     return result;
+}
+
+/**
+ * Writes the agent's own files into an installed AI skill directory: for
+ * every agent but Claude Code, its SKILL.md and, for Codex and an
+ * explicit-only skill, `agents/openai.yaml`. An installed file (a copy, or in
+ * a symlink install a link into the submodule) is removed first and never
+ * written through, so the submodule's own files are left unchanged.
+ *
+ * @param {AiSkill} skill
+ * @param {string} agent - Agent name
+ * @param {string} targetDir - The installed skill directory
+ * @param {string[]} agents - Every selected agent (decides a shared directory's copy)
+ * @returns {Promise<void>}
+ */
+export async function writeAgentFiles(skill, agent, targetDir, agents) {
+    const files = skill.variants.get(copyFor(agent, agents));
+    if (!files) {
+        return;
+    }
+    for (const [relPath, bytes] of files) {
+        const parts = relPath.split('/');
+        const target = safePathJoin(targetDir, ...parts);
+        try {
+            await fsp.unlink(target);
+        } catch (err) {
+            if (err.code !== 'ENOENT') throw err;
+        }
+        if (parts.length > 1) {
+            await fsp.mkdir(safePathJoin(targetDir, ...parts.slice(0, -1)), {
+                recursive: true,
+            });
+        }
+        await fsp.writeFile(target, bytes, { flag: 'wx', mode: 0o644 });
+    }
 }
 
 /**
@@ -563,11 +1046,9 @@ async function removePathRecursive(p) {
  * has no knowledge of external skills. AI skills are tracked at the domain
  * level, so the manifest does not record which individual skills were
  * installed — instead we scan each agent's target directory for installed AI
- * skills (by membership in the discovered list) and re-copy the ones whose
- * domain content changed.
- *
- * For symlink installs the git submodule update already refreshed the content,
- * so nothing is copied.
+ * skills (by membership in the discovered list) and reinstall the ones whose
+ * domain content changed, the way they were installed (copy or symlink), each
+ * with the agent's own files.
  *
  * @param {string} sourcePath - LaunchBridge source root
  * @param {string} targetRepo - Target repository root
@@ -575,7 +1056,7 @@ async function removePathRecursive(p) {
  * @param {{ muted: Function, success: Function, warn: Function }} ui
  * @returns {Promise<{ updated: string[], newHashes: Record<string, string>,
  *   newFolderHashes: Record<string, string> }>} updated skill names, refreshed
- *   group hashes, and refreshed per-folder digests (all merged into the manifest)
+ *   group hashes, and refreshed per-agent digests (all merged into the manifest)
  */
 export async function updateAiSkills(sourcePath, targetRepo, manifest, ui) {
     const { muted, success, warn } = ui;
@@ -644,20 +1125,38 @@ export async function updateAiSkills(sourcePath, targetRepo, manifest, ui) {
         allowedRoot,
     });
     // Refreshed alongside the group hashes: an update that changed the source
-    // must move the per-folder digests too, or the next integrity check reports
+    // must move the per-agent digests too, or the next integrity check reports
     // the update as tampering.
     const newFolderHashes = await computeAiSkillFolderHashes(
         [...allInstalled],
         aiSkills,
+        agents,
         { allowedRoot }
     );
     const changedGroups = Object.keys(newHashes).filter(
         (group) => newHashes[group] !== oldHashes[group]
     );
 
+    // A symlink install needs the reinstall as much as a copy: it has links
+    // only for the files a skill had at install time, and every agent but
+    // Claude Code has its own files written in place of links.
+    const install =
+        installMethod === 'copy'
+            ? (src, target) =>
+                  copySkill(src, target, {
+                      allowedRoot,
+                      onSkip: (link, resolved) =>
+                          warn(
+                              `  Skipped link outside the LaunchBridge source: ${link} -> ${resolved}`
+                          ),
+                  })
+            : installMethod === 'symlink'
+              ? (src, target) => createSymlink(src, target)
+              : null;
+
     const updated = [];
 
-    if (installMethod === 'copy' && changedGroups.length > 0) {
+    if (install && changedGroups.length > 0) {
         const changedSet = new Set(changedGroups);
 
         for (const [agent, names] of installedByAgent) {
@@ -673,13 +1172,8 @@ export async function updateAiSkills(sourcePath, targetRepo, manifest, ui) {
                 const target = safePathJoin(base, name);
                 try {
                     await removePathRecursive(target);
-                    await copySkill(skill.path, target, {
-                        allowedRoot,
-                        onSkip: (src, resolved) =>
-                            warn(
-                                `  Skipped link outside the LaunchBridge source: ${src} -> ${resolved}`
-                            ),
-                    });
+                    await install(skill.path, target);
+                    await writeAgentFiles(skill, agent, target, agents);
                     muted(`  Updated AI skill: ${name} (${agent})`);
                     if (!updated.includes(name)) {
                         updated.push(name);
@@ -694,11 +1188,9 @@ export async function updateAiSkills(sourcePath, targetRepo, manifest, ui) {
 
         if (updated.length > 0) {
             success(
-                `${updated.length} AI skill(s) re-copied from updated source.`
+                `${updated.length} AI skill(s) reinstalled from updated source.`
             );
         }
-    } else if (installMethod === 'symlink' && changedGroups.length > 0) {
-        muted('  AI skills updated automatically via symlinks / submodule.');
     }
 
     return { updated, newHashes, newFolderHashes };

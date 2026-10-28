@@ -6,11 +6,12 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { fileURLToPath } from 'url';
 import { computeContentHash } from '../../lib/contentHash.js';
+import { copySkill } from '../../lib/installer.js';
 import * as aiSkillsModule from '../../lib/aiSkills.js';
 import {
     AI_GROUP_PREFIX,
@@ -28,6 +29,7 @@ import {
     computeAiSkillFolderHashes,
     updateAiSkills,
     buildAiStatusRows,
+    writeAgentFiles,
     EXCLUDED_AI_DOMAINS,
 } from '../../lib/aiSkills.js';
 
@@ -45,8 +47,13 @@ function skillsRoot(root) {
     return path.join(root, 'project_dependencies', 'ai-skills', 'skills');
 }
 
+/** A SKILL.md with the frontmatter every ai-skills skill has, plus `fields`. */
+function skillMd(name, fields = '') {
+    return `---\nname: ${name}\ndescription: "${name} test skill"\n${fields}---\n# ${name}\n`;
+}
+
 /** Creates `skills/<domain>/<name>/SKILL.md` in the fake submodule. */
-function makeSkill(root, domain, name, body = `# ${name}`) {
+function makeSkill(root, domain, name, body = skillMd(name)) {
     const dir = path.join(skillsRoot(root), domain, name);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'SKILL.md'), body);
@@ -65,7 +72,7 @@ function scaffoldSubmodule(root, layout) {
     return skillsRoot(root);
 }
 
-/** The upstream v0.3.4 layout. */
+/** The upstream research domain and the release domain LaunchBridge excludes. */
 const UPSTREAM_LAYOUT = {
     research: [
         'ai-create',
@@ -74,7 +81,7 @@ const UPSTREAM_LAYOUT = {
         'ai-implement',
         'ai-archive',
     ],
-    'semantic-release': ['ai-release'],
+    release: ['ai-scaffold-release'],
 };
 
 /** Collects warnings emitted by discovery. */
@@ -134,8 +141,8 @@ describe('aiSkills', () => {
                 'ai-create',
                 'ai-implement',
                 'ai-plan',
-                'ai-release',
                 'ai-research',
+                'ai-scaffold-release',
             ]);
             const plan = skills.find((s) => s.name === 'ai-plan');
             expect(plan).toMatchObject({
@@ -147,12 +154,14 @@ describe('aiSkills', () => {
                 hasReferences: false,
                 hasScripts: false,
             });
-            const release = skills.find((s) => s.name === 'ai-release');
-            expect(release.group).toBe('ai-domain-semantic-release');
+            const release = skills.find(
+                (s) => s.name === 'ai-scaffold-release'
+            );
+            expect(release.group).toBe('ai-domain-release');
         });
 
         it('reports references/ and scripts/ presence', () => {
-            const dir = makeSkill(tempDir, 'semantic-release', 'ai-release');
+            const dir = makeSkill(tempDir, 'release', 'ai-scaffold-release');
             fs.mkdirSync(path.join(dir, 'references'));
             fs.mkdirSync(path.join(dir, 'scripts'));
             const [skill] = discoverAll(tempDir);
@@ -243,7 +252,10 @@ describe('aiSkills', () => {
                 path.join(os.tmpdir(), 'ai-linked-')
             );
             try {
-                fs.writeFileSync(path.join(external, 'SKILL.md'), '# linked');
+                fs.writeFileSync(
+                    path.join(external, 'SKILL.md'),
+                    skillMd('ai-linked')
+                );
                 fs.symlinkSync(
                     external,
                     path.join(skillsRoot(tempDir), 'research', 'ai-linked')
@@ -320,8 +332,8 @@ describe('aiSkills', () => {
 
         it('aiTrackingKey is ai-domain-<domain>, also for a single-skill domain', () => {
             expect(aiTrackingKey('ai-plan', list)).toBe('ai-domain-research');
-            expect(aiTrackingKey('ai-release', list)).toBe(
-                'ai-domain-semantic-release'
+            expect(aiTrackingKey('ai-scaffold-release', list)).toBe(
+                'ai-domain-release'
             );
             expect(aiTrackingKey('lb-setup', list)).toBe('lb-setup');
         });
@@ -335,11 +347,11 @@ describe('aiSkills', () => {
                 new Set(['ai-workflow', 'lb-setup'])
             );
             expect(cats.map((c) => c.group)).toEqual([
+                'ai-domain-release',
                 'ai-domain-research',
-                'ai-domain-semantic-release',
             ]);
 
-            const research = cats[0];
+            const research = cats[1];
             expect(research.name).toBe(AI_DOMAIN_LABELS.research);
             expect(research.name).toBe('AI Spec-Driven Development');
             expect(research.description).toBe(AI_DOMAIN_DESCRIPTIONS.research);
@@ -355,12 +367,12 @@ describe('aiSkills', () => {
             ]);
 
             // A domain with no label falls back to the generic one.
-            const release = cats[1];
-            expect(release.name).toBe('AI Skills: semantic-release');
-            expect(release.description).toBe('ai-release');
+            const release = cats[0];
+            expect(release.name).toBe('AI Skills: release');
+            expect(release.description).toBe('ai-scaffold-release');
             expect(release.individual).toBe(true);
-            // the orchestrator is never bundled with ai-release
-            expect(release.skills).toEqual(['ai-release']);
+            // the orchestrator is never bundled with ai-scaffold-release
+            expect(release.skills).toEqual(['ai-scaffold-release']);
         });
 
         it('every category group is ai-domain-<domain>', () => {
@@ -429,7 +441,7 @@ describe('aiSkills', () => {
                         'ai-plan',
                         'ai-research',
                         'ai-workflow',
-                        'ai-release',
+                        'ai-scaffold-release',
                     ],
                     list
                 )
@@ -437,7 +449,7 @@ describe('aiSkills', () => {
                 'lb-setup',
                 'ai-domain-research',
                 'ai-workflow',
-                'ai-domain-semantic-release',
+                'ai-domain-release',
             ]);
         });
 
@@ -448,7 +460,7 @@ describe('aiSkills', () => {
         });
 
         it('round-trips through manifest keys', () => {
-            const selected = ['ai-plan', 'ai-release', 'lb-setup'];
+            const selected = ['ai-plan', 'ai-scaffold-release', 'lb-setup'];
             const keys = toManifestKeys(selected, list);
             expect(expandManifestKeys(keys, selected, list).sort()).toEqual(
                 [...selected].sort()
@@ -474,7 +486,7 @@ describe('aiSkills', () => {
         it('drops a group key with no matching selected skills', () => {
             expect(
                 expandManifestKeys(
-                    ['lb-setup', 'ai-domain-semantic-release'],
+                    ['lb-setup', 'ai-domain-release'],
                     ['ai-plan'],
                     list
                 )
@@ -483,88 +495,96 @@ describe('aiSkills', () => {
     });
 
     describe('hashing', () => {
-        it('keys one shared/<name> digest per folder equal to its content hash', async () => {
-            scaffoldSubmodule(tempDir, UPSTREAM_LAYOUT);
-            const list = discoverAll(tempDir);
-            const hashes = await computeAiSkillFolderHashes(
-                ['ai-plan', 'ai-release', 'lb-setup'],
-                list
-            );
-            expect(Object.keys(hashes).sort()).toEqual([
-                'shared/ai-plan',
-                'shared/ai-release',
-            ]);
-            expect(hashes['shared/ai-plan']).toBe(
-                await computeContentHash(
-                    path.join(skillsRoot(tempDir), 'research', 'ai-plan')
+        it('keys one <agent>/<name> digest per agent, matching the copy that agent receives', async () => {
+            const dir = makeSkill(
+                tempDir,
+                'research',
+                'ai-plan',
+                skillMd(
+                    'ai-plan',
+                    'disallowed-tools: "WebFetch"\ndisable-model-invocation: true\n'
                 )
             );
+            const list = discoverAll(tempDir);
+            const agents = ['claude', 'kiro', 'codex', 'pi'];
+            const hashes = await computeAiSkillFolderHashes(
+                ['ai-plan', 'lb-setup'],
+                list,
+                agents
+            );
+            expect(Object.keys(hashes).sort()).toEqual([
+                'claude/ai-plan',
+                'codex/ai-plan',
+                'kiro/ai-plan',
+                'pi/ai-plan',
+            ]);
+            for (const agent of agents) {
+                const installed = path.join(tempDir, 'installed', agent);
+                fs.mkdirSync(path.dirname(installed), { recursive: true });
+                await copySkill(dir, installed);
+                await writeAgentFiles(list[0], agent, installed, agents);
+                expect(hashes[`${agent}/ai-plan`]).toBe(
+                    await computeContentHash(installed)
+                );
+            }
+            // Claude Code gets the source folder; every other copy differs.
+            expect(hashes['claude/ai-plan']).toBe(
+                await computeContentHash(dir)
+            );
+            expect(new Set(Object.values(hashes)).size).toBe(agents.length);
         });
 
         it('produces one stable hash per selected domain', async () => {
             scaffoldSubmodule(tempDir, UPSTREAM_LAYOUT);
             const list = discoverAll(tempDir);
-            const selected = ['ai-plan', 'ai-research', 'ai-release'];
+            const selected = ['ai-plan', 'ai-research', 'ai-scaffold-release'];
             const hashes = await computeAiGroupHashes(selected, list);
             expect(Object.keys(hashes).sort()).toEqual([
+                'ai-domain-release',
                 'ai-domain-research',
-                'ai-domain-semantic-release',
             ]);
             expect(await computeAiGroupHashes(selected, list)).toEqual(hashes);
         });
 
-        it('agrees with the group hash, which is built from the same pass', async () => {
+        it('changes the group hash and only the affected digests when a file changes', async () => {
             scaffoldSubmodule(tempDir, UPSTREAM_LAYOUT);
-            const list = discoverAll(tempDir);
-            const selected = ['ai-research', 'ai-plan'];
-            const folderHashes = await computeAiSkillFolderHashes(
-                selected,
-                list
+            const notes = path.join(
+                skillsRoot(tempDir),
+                'research',
+                'ai-plan',
+                'references',
+                'notes.md'
             );
-            const groupHashes = await computeAiGroupHashes(selected, list);
-            const hasher = crypto.createHash('sha256');
-            for (const key of Object.keys(folderHashes).sort()) {
-                hasher.update(key + '\0');
-                hasher.update(folderHashes[key]);
-            }
-            expect(groupHashes['ai-domain-research']).toBe(
-                hasher.digest('hex')
-            );
-        });
-
-        it('changes the group hash and only the affected digest when a file changes', async () => {
-            scaffoldSubmodule(tempDir, UPSTREAM_LAYOUT);
+            fs.mkdirSync(path.dirname(notes));
+            fs.writeFileSync(notes, 'before\n');
             const list = discoverAll(tempDir);
             const selected = ['ai-plan', 'ai-research'];
+            const agents = ['claude', 'kiro'];
             const beforeGroup = await computeAiGroupHashes(selected, list);
-            const beforeFolders = await computeAiSkillFolderHashes(
+            const beforeDigests = await computeAiSkillFolderHashes(
                 selected,
-                list
+                list,
+                agents
             );
 
-            fs.writeFileSync(
-                path.join(
-                    skillsRoot(tempDir),
-                    'research',
-                    'ai-plan',
-                    'SKILL.md'
-                ),
-                '# changed content'
-            );
+            fs.writeFileSync(notes, 'after\n');
             const afterGroup = await computeAiGroupHashes(selected, list);
-            const afterFolders = await computeAiSkillFolderHashes(
+            const afterDigests = await computeAiSkillFolderHashes(
                 selected,
-                list
+                list,
+                agents
             );
             expect(afterGroup['ai-domain-research']).not.toBe(
                 beforeGroup['ai-domain-research']
             );
-            expect(afterFolders['shared/ai-plan']).not.toBe(
-                beforeFolders['shared/ai-plan']
-            );
-            expect(afterFolders['shared/ai-research']).toBe(
-                beforeFolders['shared/ai-research']
-            );
+            for (const agent of agents) {
+                expect(afterDigests[`${agent}/ai-plan`]).not.toBe(
+                    beforeDigests[`${agent}/ai-plan`]
+                );
+                expect(afterDigests[`${agent}/ai-research`]).toBe(
+                    beforeDigests[`${agent}/ai-research`]
+                );
+            }
         });
 
         it('returns empty for a selection with no external skills', async () => {
@@ -573,7 +593,8 @@ describe('aiSkills', () => {
             expect(
                 await computeAiSkillFolderHashes(
                     ['lb-setup', 'ai-workflow'],
-                    list
+                    list,
+                    ['kiro']
                 )
             ).toEqual({});
             expect(
@@ -587,8 +608,8 @@ describe('aiSkills', () => {
             scaffoldSubmodule(tempDir, UPSTREAM_LAYOUT);
             const list = discoverAll(tempDir);
             expect(buildAiStatusRows(new Map(), ['ai-plan'], list)).toEqual([
+                { name: 'ai-domain-release', status: 'not installed' },
                 { name: 'ai-domain-research', status: 'ready' },
-                { name: 'ai-domain-semantic-release', status: 'not installed' },
             ]);
         });
 
@@ -597,13 +618,17 @@ describe('aiSkills', () => {
             const list = discoverAll(tempDir);
             const existing = new Map([
                 ['ai-domain-research', 'customized'],
-                ['ai-domain-semantic-release', 'not installed'],
+                ['ai-domain-release', 'not installed'],
             ]);
             expect(
-                buildAiStatusRows(existing, ['ai-plan', 'ai-release'], list)
+                buildAiStatusRows(
+                    existing,
+                    ['ai-plan', 'ai-scaffold-release'],
+                    list
+                )
             ).toEqual([
+                { name: 'ai-domain-release', status: 'ready' },
                 { name: 'ai-domain-research', status: 'customized' },
-                { name: 'ai-domain-semantic-release', status: 'ready' },
             ]);
         });
 
@@ -634,25 +659,37 @@ describe('aiSkills', () => {
             return base;
         }
 
-        it('re-copies only the skills of changed domains for copy installs, for every agent', async () => {
+        it('reinstalls only the skills of changed domains for copy installs, each with its agent’s SKILL.md', async () => {
             scaffoldSubmodule(tempDir, UPSTREAM_LAYOUT);
+            const planDir = makeSkill(
+                tempDir,
+                'research',
+                'ai-plan',
+                skillMd(
+                    'ai-plan',
+                    'disallowed-tools: "WebFetch"\ndisable-model-invocation: true\n'
+                )
+            );
             const list = discoverAll(tempDir);
-            const kiroBase = seedInstalled('.kiro', ['ai-plan', 'ai-release']);
+            const kiroBase = seedInstalled('.kiro', [
+                'ai-plan',
+                'ai-scaffold-release',
+            ]);
             const claudeBase = seedInstalled('.claude', ['ai-plan']);
+            const codexBase = seedInstalled('.codex', ['ai-plan']);
             // a native skill in the target is never treated as external
             seedInstalled('.kiro', ['ai-workflow']);
 
             const correct = await computeAiGroupHashes(
-                ['ai-plan', 'ai-release'],
+                ['ai-plan', 'ai-scaffold-release'],
                 list
             );
             const manifest = {
                 installMethod: 'copy',
-                agents: ['kiro', 'claude'],
+                agents: ['kiro', 'claude', 'codex'],
                 skillHashes: {
                     'ai-domain-research': 'STALE',
-                    'ai-domain-semantic-release':
-                        correct['ai-domain-semantic-release'],
+                    'ai-domain-release': correct['ai-domain-release'],
                 },
             };
 
@@ -664,19 +701,30 @@ describe('aiSkills', () => {
             );
 
             expect(result.updated).toEqual(['ai-plan']);
-            for (const base of [kiroBase, claudeBase]) {
-                expect(
-                    fs.readFileSync(
-                        path.join(base, 'ai-plan', 'SKILL.md'),
-                        'utf8'
-                    )
-                ).toBe('# ai-plan');
+            const plan = list.find((s) => s.name === 'ai-plan');
+            expect(
+                fs.readFileSync(path.join(claudeBase, 'ai-plan', 'SKILL.md'))
+            ).toEqual(fs.readFileSync(path.join(planDir, 'SKILL.md')));
+            for (const [base, agent] of [
+                [kiroBase, 'kiro'],
+                [codexBase, 'codex'],
+            ]) {
+                for (const [rel, bytes] of plan.variants.get(agent)) {
+                    expect(
+                        fs.readFileSync(path.join(base, 'ai-plan', rel))
+                    ).toEqual(bytes);
+                }
             }
-            // ai-release (semantic-release) is no longer offered, so an
-            // earlier install of it is left as it is, not refreshed.
+            expect(
+                fs.existsSync(
+                    path.join(codexBase, 'ai-plan', 'agents', 'openai.yaml')
+                )
+            ).toBe(true);
+            // ai-scaffold-release (release) is not offered, so an earlier
+            // install of it is left as it is, not refreshed.
             expect(
                 fs.readFileSync(
-                    path.join(kiroBase, 'ai-release', 'SKILL.md'),
+                    path.join(kiroBase, 'ai-scaffold-release', 'SKILL.md'),
                     'utf8'
                 )
             ).toBe('OLD');
@@ -690,7 +738,11 @@ describe('aiSkills', () => {
                 'ai-domain-research',
             ]);
             expect(result.newFolderHashes).toEqual(
-                await computeAiSkillFolderHashes(['ai-plan'], list)
+                await computeAiSkillFolderHashes(['ai-plan'], list, [
+                    'kiro',
+                    'claude',
+                    'codex',
+                ])
             );
         });
 
@@ -715,33 +767,68 @@ describe('aiSkills', () => {
             );
             expect(result.updated).toEqual(['ai-plan']);
             expect(Object.keys(result.newFolderHashes)).toEqual([
-                'shared/ai-plan',
+                'kiro/ai-plan',
             ]);
             expect(warnings).toContain(
                 'ai-skills: "lb-setup" shadowed by native LaunchBridge skill; skipped'
             );
         });
 
-        it('does not copy for symlink installs', async () => {
+        it('re-links changed skills for symlink installs, with a real adapted SKILL.md for every agent but Claude Code', async () => {
             scaffoldSubmodule(tempDir, UPSTREAM_LAYOUT);
-            const base = seedInstalled('.kiro', ['ai-plan']);
+            const planDir = makeSkill(
+                tempDir,
+                'research',
+                'ai-plan',
+                skillMd('ai-plan', 'disallowed-tools: "WebFetch"\n')
+            );
+            fs.mkdirSync(path.join(planDir, 'references'));
+            fs.writeFileSync(
+                path.join(planDir, 'references', 'added.md'),
+                'added upstream\n'
+            );
+            const sourceSkillMd = fs.readFileSync(
+                path.join(planDir, 'SKILL.md')
+            );
+            const plan = discoverAll(tempDir).find((s) => s.name === 'ai-plan');
+            const kiroBase = seedInstalled('.kiro', ['ai-plan']);
+            const claudeBase = seedInstalled('.claude', ['ai-plan']);
+
             const result = await updateAiSkills(
                 tempDir,
                 targetRepo,
                 {
                     installMethod: 'symlink',
-                    agents: ['kiro'],
+                    agents: ['kiro', 'claude'],
                     skillHashes: { 'ai-domain-research': 'STALE' },
                 },
                 noopUi
             );
-            expect(result.updated).toEqual([]);
-            expect(
-                fs.readFileSync(path.join(base, 'ai-plan', 'SKILL.md'), 'utf8')
-            ).toBe('OLD');
-            expect(Object.keys(result.newHashes)).toEqual([
-                'ai-domain-research',
-            ]);
+
+            expect(result.updated).toEqual(['ai-plan']);
+            // A file the skill gained since the install gets its link.
+            for (const base of [kiroBase, claudeBase]) {
+                const added = path.join(
+                    base,
+                    'ai-plan',
+                    'references',
+                    'added.md'
+                );
+                expect(fs.lstatSync(added).isSymbolicLink()).toBe(true);
+                expect(fs.readFileSync(added, 'utf8')).toBe('added upstream\n');
+            }
+            // Claude Code links the source SKILL.md; Kiro has its adapted one.
+            const claudeSkillMd = path.join(claudeBase, 'ai-plan', 'SKILL.md');
+            expect(fs.lstatSync(claudeSkillMd).isSymbolicLink()).toBe(true);
+            const kiroSkillMd = path.join(kiroBase, 'ai-plan', 'SKILL.md');
+            expect(fs.lstatSync(kiroSkillMd).isFile()).toBe(true);
+            expect(fs.readFileSync(kiroSkillMd)).toEqual(
+                plan.variants.get('kiro').get('SKILL.md')
+            );
+            // The submodule's own SKILL.md was not written through a link.
+            expect(fs.readFileSync(path.join(planDir, 'SKILL.md'))).toEqual(
+                sourceSkillMd
+            );
         });
 
         it('returns empty when no AI skills are installed in the target', async () => {
@@ -785,11 +872,11 @@ describe('excluded ai-skills domains', () => {
         fs.rmSync(tempDir, { recursive: true, force: true });
     });
 
-    it('does not offer ai-release (the semantic-release domain) by default', () => {
+    it('does not offer ai-scaffold-release (the release domain) by default', () => {
         scaffoldSubmodule(tempDir, UPSTREAM_LAYOUT);
         const skills = discoverAiSkills(tempDir);
-        expect(skills.map((s) => s.name)).not.toContain('ai-release');
-        expect(skills.some((s) => s.domain === 'semantic-release')).toBe(false);
+        expect(skills.map((s) => s.name)).not.toContain('ai-scaffold-release');
+        expect(skills.some((s) => s.domain === 'release')).toBe(false);
         expect(buildAiCategories(skills).map((c) => c.name)).toEqual([
             'AI Spec-Driven Development',
         ]);
@@ -802,7 +889,333 @@ describe('excluded ai-skills domains', () => {
         );
     });
 
-    it('lists semantic-release in EXCLUDED_AI_DOMAINS', () => {
-        expect(EXCLUDED_AI_DOMAINS.has('semantic-release')).toBe(true);
+    it('lists release in EXCLUDED_AI_DOMAINS', () => {
+        expect(EXCLUDED_AI_DOMAINS.has('release')).toBe(true);
+    });
+
+    it('offers the pinned submodule as six labelled bundles', () => {
+        const repoRoot = path.resolve(
+            path.dirname(fileURLToPath(import.meta.url)),
+            '..',
+            '..',
+            '..'
+        );
+        const sink = warnSink();
+        const skills = discoverAiSkills(repoRoot, { onWarn: sink.onWarn });
+        expect(sink.messages).toEqual([]);
+        const bundles = buildAiCategories(skills, new Set(['ai-workflow']));
+        expect(
+            Object.fromEntries(bundles.map((c) => [c.name, c.skills]))
+        ).toEqual({
+            'AI Architecture Decisions': ['ai-adr'],
+            'AI Agent Context': [
+                'ai-agent-context',
+                'ai-make-skill',
+                'ai-scaffold-agents-md',
+            ],
+            'AI Development Process': [
+                'ai-dev-autopr',
+                'ai-dev-issue',
+                'ai-scaffold-dev-context',
+                'ai-scaffold-dev-templates',
+            ],
+            'AI Prose Documents': [
+                'ai-human-docx',
+                'ai-human-draft',
+                'ai-human-outline',
+                'ai-human-pdf',
+                'ai-human-xlsx',
+            ],
+            'AI Spec-Driven Development': [
+                'ai-archive',
+                'ai-create',
+                'ai-implement',
+                'ai-plan',
+                'ai-research',
+                'ai-workflow',
+            ],
+            'AI Software Documentation': [
+                'ai-doc',
+                'ai-scaffold-docusaurus-site',
+            ],
+        });
+    });
+});
+
+describe('the SKILL.md agents other than Claude Code receive', () => {
+    let tempDir;
+    beforeEach(() => {
+        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-skills-adapt-'));
+    });
+    afterEach(() => {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    /** Discovers one fixture skill and returns it with the warnings. */
+    function discoverOne(source) {
+        makeSkill(tempDir, 'research', 'ai-plan', source);
+        const sink = warnSink();
+        const [skill] = discoverAll(tempDir, { onWarn: sink.onWarn });
+        return { skill, warnings: sink.messages };
+    }
+
+    // The expected text is what the ai-skills installer (v0.6.2) writes for
+    // Kiro from the same source.
+    it('keeps the fields Kiro reads and restates the explicit-only and tool declarations', () => {
+        const { skill, warnings } = discoverOne(
+            '---\n' +
+                '# kept: lines before the first field\n' +
+                'name: ai-plan\n' +
+                'description: "Plan a feature. Invoke ONLY via the /ai-plan slash command."\n' +
+                'disallowed-tools: "WebFetch, Skill"\n' +
+                'allowed-tools: "Bash(git config user.name:*), Bash(find:*)"\n' +
+                '\n' +
+                'effort: high\n' +
+                'disable-model-invocation: true\n' +
+                'license: MIT-0\n' +
+                'metadata:\n' +
+                '  owner: docs\n' +
+                '---\n' +
+                '# ai-plan\n' +
+                '\n' +
+                'Body text.'
+        );
+        expect(warnings).toEqual([]);
+        expect(
+            skill.variants.get('kiro').get('SKILL.md').toString('utf8')
+        ).toBe(
+            '---\n' +
+                '# kept: lines before the first field\n' +
+                'name: ai-plan\n' +
+                'description: "Plan a feature. Invoke ONLY via the /ai-plan slash command."\n' +
+                'license: MIT-0\n' +
+                'metadata:\n' +
+                '  owner: docs\n' +
+                '---\n' +
+                '# ai-plan\n' +
+                '\n' +
+                'Body text.\n' +
+                '\n' +
+                '## Invocation\n' +
+                '\n' +
+                'Run this skill only when the user invokes it by name. Do not start it on your own because a request looks related to what it does.\n' +
+                '\n' +
+                '## Tool restrictions\n' +
+                '\n' +
+                'This skill was written for an agent that enforces the tool declarations in its frontmatter. Kiro does not enforce them, so they are stated here, and you must follow them yourself. An entry `Bash(<command>:*)` means any shell command that starts with `<command>`.\n' +
+                '\n' +
+                'Do not use these tools:\n' +
+                '\n' +
+                '- `WebFetch`\n' +
+                '- `Skill`\n' +
+                '\n' +
+                "This skill's steps run these commands. The list does not limit which other tools you may use:\n" +
+                '\n' +
+                '- `Bash(git config user.name:*)`\n' +
+                '- `Bash(find:*)`\n'
+        );
+    });
+
+    it('leaves a SKILL.md with only a name and a description unchanged for every agent', () => {
+        const source = skillMd('ai-plan');
+        const { skill } = discoverOne(source);
+        for (const files of skill.variants.values()) {
+            expect([...files.keys()]).toEqual(['SKILL.md']);
+            expect(files.get('SKILL.md').toString('utf8')).toBe(source);
+        }
+    });
+
+    // Expected text from the ai-skills installer's Codex and pi adapters
+    // (v0.6.2) for the same source.
+    const EXPLICIT_ONLY_SOURCE =
+        '---\n' +
+        'name: ai-plan\n' +
+        'description: "Plan a feature. Invoke ONLY via the /ai-plan slash command."\n' +
+        'disallowed-tools: "WebFetch, Skill"\n' +
+        'allowed-tools: "Bash(find:*)"\n' +
+        '\n' +
+        'effort: high\n' +
+        'disable-model-invocation: true\n' +
+        '---\n' +
+        '# ai-plan\n' +
+        '\n' +
+        'Then run /ai-create, not /ai-plan-extra or .claude/skills/ai-plan/.\n';
+    const RESTRICTIONS = (label) =>
+        '## Tool restrictions\n' +
+        '\n' +
+        `This skill was written for an agent that enforces the tool declarations in its frontmatter. ${label} does not enforce them, so they are stated here, and you must follow them yourself. An entry \`Bash(<command>:*)\` means any shell command that starts with \`<command>\`.\n` +
+        '\n' +
+        'Do not use these tools:\n' +
+        '\n' +
+        '- `WebFetch`\n' +
+        '- `Skill`\n' +
+        '\n' +
+        "This skill's steps run these commands. The list does not limit which other tools you may use:\n" +
+        '\n' +
+        '- `Bash(find:*)`\n';
+
+    /** Discovers ai-plan from EXPLICIT_ONLY_SOURCE, beside an ai-create to invoke. */
+    function discoverExplicitOnly() {
+        makeSkill(tempDir, 'research', 'ai-create');
+        makeSkill(tempDir, 'research', 'ai-plan', EXPLICIT_ONLY_SOURCE);
+        return discoverAll(tempDir).find((s) => s.name === 'ai-plan');
+    }
+
+    it('gives Codex $name invocations and an invocation policy instead of an Invocation section', () => {
+        const codex = discoverExplicitOnly().variants.get('codex');
+        expect(codex.get('SKILL.md').toString('utf8')).toBe(
+            '---\n' +
+                'name: ai-plan\n' +
+                'description: "Plan a feature. Invoke ONLY via the $ai-plan slash command."\n' +
+                '---\n' +
+                '# ai-plan\n' +
+                '\n' +
+                'Then run $ai-create, not /ai-plan-extra or .claude/skills/ai-plan/.\n' +
+                '\n' +
+                RESTRICTIONS('Codex')
+        );
+        expect(codex.get('agents/openai.yaml').toString('utf8')).toBe(
+            '# Written by ai-skills: ai-plan declares disable-model-invocation, so Codex\n' +
+                '# runs it only when the user invokes it.\n' +
+                'policy:\n' +
+                '  allow_implicit_invocation: false\n'
+        );
+    });
+
+    it('keeps the fields pi enforces and gives it /skill:name invocations', () => {
+        const pi = discoverExplicitOnly().variants.get('pi');
+        expect([...pi.keys()]).toEqual(['SKILL.md']);
+        expect(pi.get('SKILL.md').toString('utf8')).toBe(
+            '---\n' +
+                'name: ai-plan\n' +
+                'description: "Plan a feature. Invoke ONLY via the /skill:ai-plan slash command."\n' +
+                'allowed-tools: "Bash(find:*)"\n' +
+                '\n' +
+                'disable-model-invocation: true\n' +
+                '---\n' +
+                '# ai-plan\n' +
+                '\n' +
+                'Then run /skill:ai-create, not /ai-plan-extra or .claude/skills/ai-plan/.\n' +
+                '\n' +
+                RESTRICTIONS('pi')
+        );
+    });
+
+    it('gives Cline, Roo Code and other agents the Kiro copy, naming the agent', () => {
+        const { variants } = discoverExplicitOnly();
+        const kiro = variants.get('kiro').get('SKILL.md').toString('utf8');
+        for (const [id, label] of [
+            ['cline', 'Cline'],
+            ['roo', 'Roo Code'],
+            ['other', 'This agent'],
+        ]) {
+            expect(variants.get(id).get('SKILL.md').toString('utf8')).toBe(
+                kiro.replace(
+                    'Kiro does not enforce',
+                    `${label} does not enforce`
+                )
+            );
+        }
+    });
+
+    it('gives a skills directory two agents share the copy of the first in agentConfig order', async () => {
+        const skill = discoverExplicitOnly();
+        const list = discoverAll(tempDir);
+        // pi and "other" both install into .agents/skills.
+        const agents = ['other', 'pi'];
+        const hashes = await computeAiSkillFolderHashes(
+            ['ai-plan'],
+            list,
+            agents
+        );
+        const installed = path.join(tempDir, 'installed');
+        await copySkill(skill.path, installed);
+        await writeAgentFiles(skill, 'other', installed, agents);
+        expect(fs.readFileSync(path.join(installed, 'SKILL.md'))).toEqual(
+            skill.variants.get('pi').get('SKILL.md')
+        );
+        const digest = await computeContentHash(installed);
+        expect(hashes['other/ai-plan']).toBe(digest);
+        expect(hashes['pi/ai-plan']).toBe(digest);
+    });
+
+    // A declaration in a form the adapter cannot read is never dropped: the
+    // skill is not offered at all.
+    it.each([
+        ['no frontmatter', '# ai-plan\n', 'does not begin with a --- line'],
+        [
+            'an unclosed frontmatter',
+            '---\nname: ai-plan\ndescription: "x"\n',
+            'has no closing --- line',
+        ],
+        [
+            'another name',
+            skillMd('ai-other'),
+            'does not give the name "ai-plan"',
+        ],
+        ['no description', '---\nname: ai-plan\n---\n', 'has no description'],
+        [
+            'a field given twice',
+            skillMd('ai-plan', 'name: ai-plan\n'),
+            'has the field "name" twice',
+        ],
+        [
+            'a tool list over several lines',
+            skillMd('ai-plan', 'allowed-tools:\n  - Read\n'),
+            'field "allowed-tools" spans several lines',
+        ],
+        [
+            'an escape in a quoted value',
+            skillMd('ai-plan', 'disallowed-tools: "Web\\"Fetch"\n'),
+            'field "disallowed-tools" has a value this installer cannot read',
+        ],
+        [
+            'a flow list',
+            skillMd('ai-plan', 'disallowed-tools: [WebFetch]\n'),
+            'field "disallowed-tools" is not a quoted string',
+        ],
+        [
+            'an unquoted tool list',
+            skillMd('ai-plan', 'disallowed-tools: WebFetch, Skill\n'),
+            'field "disallowed-tools" is not a quoted string',
+        ],
+        [
+            'an explicit-only flag that is not true or false',
+            skillMd('ai-plan', 'disable-model-invocation: yes\n'),
+            'field "disable-model-invocation" is not true or false',
+        ],
+        // YAML reads these as the field; the column-0 `key:` rule would not.
+        [
+            'a quoted key',
+            skillMd('ai-plan', '"disable-model-invocation": true\n'),
+            'writes the field "disable-model-invocation" in a form this installer cannot read',
+        ],
+        [
+            'an explicit key',
+            skillMd('ai-plan', '? disallowed-tools\n: "WebFetch"\n'),
+            'writes the field "disallowed-tools" in a form this installer cannot read',
+        ],
+        [
+            'a byte-order mark',
+            Buffer.concat([
+                Buffer.from([0xef, 0xbb, 0xbf]),
+                Buffer.from(skillMd('ai-plan')),
+            ]),
+            'does not begin with a --- line',
+        ],
+        [
+            'bytes that are not UTF-8',
+            Buffer.concat([
+                Buffer.from(skillMd('ai-plan')),
+                Buffer.from([0xff]),
+            ]),
+            'is not UTF-8',
+        ],
+    ])('skips a skill whose SKILL.md has %s', (_case, source, reason) => {
+        const { skill, warnings } = discoverOne(source);
+        expect(skill).toBeUndefined();
+        expect(warnings).toEqual([
+            `ai-skills: "ai-plan" SKILL.md ${reason}; skipped`,
+        ]);
     });
 });

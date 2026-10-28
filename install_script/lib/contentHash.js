@@ -147,22 +147,37 @@ async function listFilesRecursive(
  * resolve outside it are skipped. Without it every link is followed, matching
  * verify_integrity.py; for a skill with no outside links both give the same hash.
  *
+ * `overrides` gives the bytes of files as installed, by relative path: a
+ * listed file's bytes are replaced and any other path is added. The result is
+ * the hash of the directory as installed with those files (an AI skill's own
+ * SKILL.md for an agent, and Codex's agents/openai.yaml).
+ *
  * @param {string} dirPath - Absolute path to the skill directory
- * @param {{ allowedRoot?: string }} [options]
+ * @param {{ allowedRoot?: string, overrides?: Map<string, Buffer> }} [options]
  * @returns {Promise<string>} Hex-encoded SHA-256 hash
  */
-export async function computeContentHash(dirPath, { allowedRoot } = {}) {
+export async function computeContentHash(
+    dirPath,
+    { allowedRoot, overrides } = {}
+) {
     const relativePaths = await listFilesRecursive(
         dirPath,
         dirPath,
         allowedRoot
     );
+    for (const relPath of overrides?.keys() ?? []) {
+        if (!relativePaths.includes(relPath)) {
+            relativePaths.push(relPath);
+        }
+    }
     const sortedPaths = relativePaths.sort();
 
     const hasher = crypto.createHash('sha256');
 
     for (const relPath of sortedPaths) {
-        const content = await fs.readFile(safePathJoin(dirPath, relPath));
+        const content =
+            overrides?.get(relPath) ??
+            (await fs.readFile(safePathJoin(dirPath, relPath)));
         hasher.update(relPath + '\0');
         hasher.update(content);
     }

@@ -4,7 +4,7 @@
  * The upgrade path has to keep the manifest verifiable.
  *
  * WHY THIS FILE EXISTS. `verify_integrity.py` checks external (ai-skills) skills
- * from `externalSkillHashes` (`shared/<skill>` digests), because their
+ * from `externalSkillHashes` (`<agent>/<skill>` digests), because their
  * `skillHashes` keys are `ai-domain-<domain>` GROUP keys that name no
  * directory. A fresh install records those per-folder digests; an upgrade has
  * to carry them forward. If `runPostPullSync` dropped the field — or dropped
@@ -112,19 +112,28 @@ describe('runPostPullSync external manifest fields', () => {
                 'ai-domain-research',
             ]);
 
-            // The per-folder digests are the ones verify_integrity.py compares
+            // The per-agent digests are the ones verify_integrity.py compares
             // against an installed directory, so they must be the real thing.
             const aiSkills = discoverAiSkills(REPO_ROOT);
             const expected = await computeAiSkillFolderHashes(
                 SEEDED_SKILLS,
-                aiSkills
+                aiSkills,
+                ['kiro']
             );
             expect(manifest.externalSkillHashes).toEqual(expected);
             expect(Object.keys(manifest.externalSkillHashes).sort()).toEqual([
-                'shared/ai-plan',
-                'shared/ai-research',
+                'kiro/ai-plan',
+                'kiro/ai-research',
             ]);
-            expect(manifest.externalSkillHashes['shared/ai-plan']).toBe(
+            // The update reinstalled the stale skills, so the digest matches
+            // the directory Kiro now has, with its adapted SKILL.md…
+            expect(manifest.externalSkillHashes['kiro/ai-plan']).toBe(
+                await computeContentHash(
+                    path.join(targetRepo, '.kiro', 'skills', 'ai-plan')
+                )
+            );
+            // …which is not the source folder Claude Code would receive.
+            expect(manifest.externalSkillHashes['kiro/ai-plan']).not.toBe(
                 await computeContentHash(
                     path.join(AI_SUBMODULE, 'skills', 'research', 'ai-plan')
                 )
@@ -135,11 +144,16 @@ describe('runPostPullSync external manifest fields', () => {
     it.skipIf(!hasSubmodule)(
         'keeps recorded group keys and digests the update could not see',
         async () => {
-            // A skill installed for an agent that is no longer in `agents`
-            // still has a digest and group key recorded. Dropping them would
-            // leave that skill unverifiable, so the merge only ever adds.
+            // A skill the update cannot see (here ai-release, which an older
+            // version installed) still has a digest and group key recorded.
+            // Dropping them would leave that skill unverifiable, so they stay.
+            // A digest an older install recorded for every agent is replaced
+            // once the skill has refreshed per-agent digests.
             seedInstall({
-                externalSkillHashes: { 'shared/ai-release': 'PRESERVED' },
+                externalSkillHashes: {
+                    'shared/ai-release': 'PRESERVED',
+                    'shared/ai-plan': 'LEGACY',
+                },
                 externalManifestKeys: [
                     'ai-domain-research',
                     'ai-domain-semantic-release',
@@ -151,9 +165,10 @@ describe('runPostPullSync external manifest fields', () => {
             expect(manifest.externalSkillHashes['shared/ai-release']).toBe(
                 'PRESERVED'
             );
-            expect(
-                manifest.externalSkillHashes['shared/ai-plan']
-            ).toBeDefined();
+            expect(manifest.externalSkillHashes['kiro/ai-plan']).toBeDefined();
+            expect(manifest.externalSkillHashes).not.toHaveProperty(
+                'shared/ai-plan'
+            );
             expect(manifest.externalManifestKeys).toEqual([
                 'ai-domain-research',
                 'ai-domain-semantic-release',

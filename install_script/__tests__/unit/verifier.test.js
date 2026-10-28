@@ -230,6 +230,23 @@ describe('verifySymlink', () => {
 
             expect(verifySymlink(targetDir)).toBe(true);
         });
+
+        it('should return true for a regular SKILL.md beside symlinked files (an AI skill adapted for the agent)', () => {
+            const sourceDir = path.join(tempDir, 'source');
+            const targetDir = path.join(tempDir, 'target');
+
+            fs.mkdirSync(sourceDir);
+            fs.writeFileSync(path.join(sourceDir, 'README.md'), '# Readme');
+
+            fs.mkdirSync(targetDir);
+            fs.writeFileSync(path.join(targetDir, 'SKILL.md'), '# Test Skill');
+            fs.symlinkSync(
+                path.join(sourceDir, 'README.md'),
+                path.join(targetDir, 'README.md')
+            );
+
+            expect(verifySymlink(targetDir)).toBe(true);
+        });
     });
 
     describe('invalid symlink installations', () => {
@@ -240,10 +257,9 @@ describe('verifySymlink', () => {
             expect(verifySymlink(targetDir)).toBe(false);
         });
 
-        it('should return false for a directory with regular SKILL.md (not symlinked)', () => {
+        it('should return false for a directory whose SKILL.md is a directory', () => {
             const targetDir = path.join(tempDir, 'target');
-            fs.mkdirSync(targetDir);
-            fs.writeFileSync(path.join(targetDir, 'SKILL.md'), '# Test Skill');
+            fs.mkdirSync(path.join(targetDir, 'SKILL.md'), { recursive: true });
 
             expect(verifySymlink(targetDir)).toBe(false);
         });
