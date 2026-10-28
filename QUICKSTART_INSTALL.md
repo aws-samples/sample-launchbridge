@@ -49,7 +49,7 @@ The installer will walk you through a short set of prompts:
 
 1. **Agent** — select your coding agent (e.g. Kiro, Claude Code)
 2. **Install method** — choose `copy` (recommended for Kiro) or `symlink`
-3. **Skills** — select which skills to install (select all to get the full suite). This includes the native LaunchBridge skills plus the optional **AI Spec-Driven Development** bundle (the SDD workflow `/ai-create → /ai-research → /ai-plan → /ai-implement → /ai-archive` + the `ai-workflow` orchestrator) from the ai-skills library.
+3. **Skills** — select which skills to install (select all to get the full suite). This includes the native LaunchBridge skills plus the optional AI skill bundles from the ai-skills library: **AI Spec-Driven Development** (the SDD workflow `/ai-create → /ai-research → /ai-plan → /ai-implement → /ai-archive` + the `ai-workflow` orchestrator), **AI Architecture Decisions**, **AI Agent Context**, **AI Development Process**, **AI Prose Documents** and **AI Software Documentation**.
 4. **Confirm** — review the summary and confirm
 
 When it finishes, you'll see a success banner and a note to run `lb-setup`.
