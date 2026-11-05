@@ -9,3 +9,4 @@
 - Negin Sokhandan
 - Hector Lopez
 - Tony Jiang
+- Vincil Bishop - AI Skills
