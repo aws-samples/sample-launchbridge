@@ -1,0 +1,6 @@
+[submodule "project_dependencies/metric-library"]
+	path = project_dependencies/metric-library
+	url = https://github.com/aws-samples/sample-metric-library.git
+[submodule "project_dependencies/ai-skills"]
+	path = project_dependencies/ai-skills
+	url = https://github.com/aws-samples/sample-ai-skills.git

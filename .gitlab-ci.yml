@@ -1,0 +1,328 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+# ─────────────────────────────────────────────────────────────────────────────
+# ONE PIPELINE PER PUSH — branch pipelines only.
+#
+# No job below declares `rules:`, so each keeps the implicit
+# `only: [branches, tags]` and cannot run in a merge-request pipeline. The
+# `workflow:` block makes that explicit rather than relying on it.
+#
+# Why it is stated rather than left implicit: adding a single job with `rules:`
+# breaks it silently. GitLab then creates a SECOND pipeline per commit
+# containing only that job, so an MR displays a pipeline that tested nothing —
+# and with "Pipelines must succeed" enabled, the merge gate is answered by that
+# empty pipeline instead of by the tests. `gitlab-ci/lint` warns about the same
+# shape ("may allow multiple pipelines to run for a single action ... with no
+# `workflow:rules`").
+#
+# To adopt merge-request pipelines later, change the rule here rather than
+# adding `rules:` to individual jobs, and give every job that should run on a
+# merge request an explicit rule at the same time.
+# ─────────────────────────────────────────────────────────────────────────────
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: never
+    - when: always
+
+stages:
+  - lint
+  - test
+  - security
+
+ash-scan:
+  stage: security
+  image: public.ecr.aws/docker/library/python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+  interruptible: true
+  timeout: 45m
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+      - api_failure
+      - scheduler_failure
+  variables:
+    # Run scanners sequentially to minimize memory usage
+    ASH_MAX_WORKERS: "1"
+    # Request more ephemeral storage for Kubernetes runners
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "10Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_LIMIT: "10Gi"
+    # Memory allocation for security scanning
+    KUBERNETES_MEMORY_REQUEST: "4Gi"
+    KUBERNETES_MEMORY_LIMIT: "6Gi"
+    KUBERNETES_CPU_REQUEST: "2"
+    KUBERNETES_CPU_LIMIT: "4"
+    # Pin tool versions for reproducibility. Bump these together with
+    # any change to .ash.yaml that depends on newer features.
+    ASH_VERSION: "v3.7.1"
+    # Commit the ASH_VERSION tag points to. Update both together.
+    ASH_COMMIT: "af1206aff596f1288ad066828058b3011de2a998"
+    GRYPE_VERSION: "v0.112.0"
+    SYFT_VERSION: "v1.40.0"
+    # SHA-256 of each release archive (from the vendor's checksums.txt). Update with the versions.
+    GRYPE_SHA256: "acb14a030010fe9bdb9594b4ae108d9d14ef2f926d936aa0916dc62c89c058ea"
+    SYFT_SHA256: "f551cd16da3a5456f5245bb8045b98594263a678a9d2a07b462a05be0357b795"
+    CFN_NAG_VERSION: "0.8.10"
+  before_script:
+    # Install minimal system dependencies. Node/npm are required by npm-audit.
+    - apt-get update && apt-get install -y --no-install-recommends ruby-full curl ca-certificates build-essential libyaml-dev git nodejs npm
+    - apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+    # Install cfn-nag with version pinning
+    - gem install cfn-nag --version ${CFN_NAG_VERSION} --no-document
+    - rm -rf /root/.gem/ruby/*/cache
+    # Install Grype — download binary directly (no script execution), verify, then extract
+    - curl -sSfL --retry 3 --retry-delay 5 -o /tmp/grype.tar.gz https://github.com/anchore/grype/releases/download/${GRYPE_VERSION}/grype_${GRYPE_VERSION#v}_linux_amd64.tar.gz
+    - echo "${GRYPE_SHA256}  /tmp/grype.tar.gz" | sha256sum -c -
+    - tar -xzf /tmp/grype.tar.gz -C /usr/local/bin grype
+    # Install Syft — download binary directly (no script execution), verify, then extract
+    - curl -sSfL --retry 3 --retry-delay 5 -o /tmp/syft.tar.gz https://github.com/anchore/syft/releases/download/${SYFT_VERSION}/syft_${SYFT_VERSION#v}_linux_amd64.tar.gz
+    - echo "${SYFT_SHA256}  /tmp/syft.tar.gz" | sha256sum -c -
+    - tar -xzf /tmp/syft.tar.gz -C /usr/local/bin syft
+    # Install ASH with version pinning
+    - pip install --no-cache-dir git+https://github.com/awslabs/automated-security-helper.git@${ASH_COMMIT}
+    - rm -rf /tmp/* /root/.cache
+    # Print versions for the build log so future debugging can correlate
+    # findings with the exact tool versions used.
+    - ash --version || true
+    - grype --version || true
+    - syft --version || true
+    - cfn_nag --version || true
+  script:
+    # Honors fail_on_findings: true and severity_threshold: MEDIUM from
+    # .ash.yaml at the project root. ASH auto-discovers this file via its
+    # default config search (.ash.yaml / .ash.yml / .ash.json / ash.yaml).
+    # The job fails if any MEDIUM-or-higher finding is reported.
+    - ash --mode local --source-dir . --output-dir .ash/ash_output
+  after_script:
+    # Always print the human-readable summary, even on failure, so
+    # reviewers can triage findings directly from the job log.
+    - ash report || true
+  artifacts:
+    when: always
+    paths:
+      - .ash/ash_output
+    reports:
+      # SAST findings ingested by GitLab's Security Dashboard
+      sast: .ash/ash_output/reports/ash.gl-sast-report.json
+      # Test-style report so the job summary shows pass/fail per scanner
+      junit: .ash/ash_output/reports/ash.junit.xml
+      # SBOM ingested by GitLab's Dependency List view
+      cyclonedx: .ash/ash_output/reports/ash.cdx.json
+    expire_in: 1 week
+
+# fail_on_findings: true in .ash.yaml means a MEDIUM+ finding
+# will fail the ash-scan job. allow_failure stays at the default (false).
+
+format-lint:
+  stage: lint
+  # Linting tools used:
+  # - Ruff: Fast Python linter and formatter (replaces flake8, black, isort)
+  # - Prettier: Code formatter for JS/TS/JSON/YAML/CSS/Markdown
+  # - ShellCheck: Static analysis for shell scripts
+  # - yamllint: YAML syntax and style checker
+  # - codespell: Spell checker for code and documentation
+  # - grep: Security checks for private keys and large files
+  image: public.ecr.aws/docker/library/python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+  variables:
+    # Memory allocation for linting
+    KUBERNETES_MEMORY_REQUEST: "2Gi"
+    KUBERNETES_MEMORY_LIMIT: "4Gi"
+    KUBERNETES_CPU_REQUEST: "1"
+    KUBERNETES_CPU_LIMIT: "2"
+    # Pin versions for reproducibility
+    RUFF_VERSION: "0.8.4"
+    YAMLLINT_VERSION: "1.35.1"
+    SHELLCHECK_VERSION: "0.10.0"
+    # SHA-256 of the ShellCheck release archives. Update with the version.
+    SHELLCHECK_SHA256: "6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87"
+    CODESPELL_VERSION: "2.4.1"
+  cache:
+    key: lint-dependencies
+    paths:
+      - node_modules/
+  before_script:
+    # Install minimal dependencies
+    - apt-get update && apt-get install -y --no-install-recommends nodejs npm curl xz-utils git
+    - apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+    # Install ShellCheck (shell script linter)
+    - curl -sSfL -o /tmp/shellcheck.tar.xz https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz
+    - echo "${SHELLCHECK_SHA256}  /tmp/shellcheck.tar.xz" | sha256sum -c -
+    - tar -xJf /tmp/shellcheck.tar.xz
+    - mv shellcheck-v${SHELLCHECK_VERSION}/shellcheck /usr/local/bin/
+    - rm -rf shellcheck-v${SHELLCHECK_VERSION}
+    # Install Python linters: Ruff (Python linter/formatter), yamllint (YAML linter), codespell (spell checker)
+    - pip install --no-cache-dir ruff==${RUFF_VERSION} yamllint==${YAMLLINT_VERSION} codespell==${CODESPELL_VERSION}
+    # Install Prettier (JS/TS/JSON/YAML/CSS/Markdown formatter)
+    - npm install --save-dev prettier@3.8.1
+    - rm -rf /tmp/* /root/.cache
+  script:
+    - mkdir -p .lint_reports
+    - |
+      # Security: Private key detection
+      echo "Checking for private keys..."
+      grep -r "PRIVATE KEY" --exclude-dir={.git,.venv,node_modules,.ash,dist,build,.lint_reports,.githooks,docs} --exclude="run_lint.sh" . > .lint_reports/private-key-check.txt 2>&1 || true
+      if [ -s .lint_reports/private-key-check.txt ]; then
+        echo "WARNING: Potential private keys found"
+        cat .lint_reports/private-key-check.txt
+      fi
+    - |
+      # Security: Large file detection (>100MB)
+      echo "Checking for large files..."
+      find . -type f -size +100M ! -path "*/.git/*" ! -path "*/.venv/*" ! -path "*/node_modules/*" ! -path "*/.ash/*" ! -path "*/docs/*" > .lint_reports/large-files.txt 2>&1 || true
+      if [ -s .lint_reports/large-files.txt ]; then
+        echo "WARNING: Large files found"
+        cat .lint_reports/large-files.txt
+      fi
+    - |
+      # Code quality: Spell checking
+      echo "Running codespell..."
+      codespell --skip=".git,.venv,node_modules,*.pyc,.ash,dist,build,package-lock.json,./project_dependencies,./skills" --ignore-words-list="Skelton,caf,ot,sme,trough" . > .lint_reports/codespell.txt 2>&1 || echo "Codespell found typos"
+    - |
+      # Python: Ruff linting
+      echo "Running Ruff linting..."
+      ruff check --exclude ".venv,node_modules,.ash,dist,build,infra/cdk.out,project_dependencies" . > .lint_reports/ruff.txt 2>&1
+    - |
+      # Python: Ruff formatting check
+      echo "Running Ruff formatting..."
+      ruff format --check --exclude ".venv,node_modules,.ash,dist,build,infra/cdk.out,project_dependencies" . > .lint_reports/ruff-format.txt 2>&1
+    - |
+      # JavaScript/TypeScript/JSON/YAML: Prettier
+      echo "Running Prettier..."
+      PRETTIER_FILES=$(find . -type f \( -name "*.js" -o -name "*.jsx" -o -name "*.ts" -o -name "*.tsx" -o -name "*.json" -o -name "*.css" -o -name "*.md" -o -name "*.yaml" -o -name "*.yml" \) ! -path "*/node_modules/*" ! -path "*/.venv/*" ! -path "*/dist/*" ! -path "*/build/*" ! -path "*/.ash/*" ! -path "*/docs/*" ! -name "package-lock.json" ! -name "tailwind.config.js" ! -name ".gitlab-ci.yml" 2>/dev/null)
+      if [ -n "$PRETTIER_FILES" ]; then
+        echo "$PRETTIER_FILES" | xargs npx prettier --check > .lint_reports/prettier.txt 2>&1
+      else
+        echo "No files to format" > .lint_reports/prettier.txt
+      fi
+    - |
+      # Shell: ShellCheck
+      echo "Running ShellCheck..."
+      SHELL_FILES=$(find . -name "*.sh" -type f ! -path "*/node_modules/*" ! -path "*/.venv/*" ! -path "*/.ash/*" ! -path "*/docs/*" 2>/dev/null)
+      if [ -n "$SHELL_FILES" ]; then
+        echo "$SHELL_FILES" | xargs shellcheck -e SC1091 -f gcc > .lint_reports/shellcheck.txt 2>&1
+      else
+        echo "No shell scripts to lint" > .lint_reports/shellcheck.txt
+      fi
+    - |
+      # YAML: yamllint
+      echo "Running yamllint..."
+      YAML_FILES=$(find . \( -name "*.yaml" -o -name "*.yml" \) ! -path "*/.venv/*" ! -path "*/node_modules/*" ! -path "*/.ash/*" ! -path "*/dist/*" ! -path "*/build/*" ! -path "*/.lint_reports/*" ! -path "*/docs/*" ! -name ".gitlab-ci.yml" 2>/dev/null)
+      if [ -n "$YAML_FILES" ]; then
+        echo "$YAML_FILES" | xargs yamllint -f parsable -d "{extends: default, rules: {line-length: {max: 200}, document-start: disable, comments: {min-spaces-from-content: 1}}}" > .lint_reports/yamllint.txt 2>&1
+      else
+        echo "No YAML files to lint" > .lint_reports/yamllint.txt
+      fi
+  after_script:
+    - echo "=== Linting Summary ==="
+    - |
+      for report in .lint_reports/*.txt; do
+        if [ -f "$report" ]; then
+          echo "✓ $(basename $report) generated"
+        fi
+      done
+  artifacts:
+    when: always
+    paths:
+      - .lint_reports/
+    expire_in: 1 week
+  allow_failure: false
+
+sbom:
+  stage: security
+  # CycloneDX SBOMs for the frozen Python set and the installer's npm
+  # dependencies. Attach the artifacts from a release tag's pipeline to the
+  # release.
+  image: public.ecr.aws/docker/library/python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends nodejs npm
+    - apt-get clean && rm -rf /var/lib/apt/lists/*
+    - pip install --no-cache-dir uv==0.13.4
+  script:
+    - ./install_script/make-sbom.sh sbom
+  artifacts:
+    paths:
+      - sbom/
+    expire_in: 1 year
+
+ai-skills-gitlink:
+  stage: test
+  # The ai-skills submodule must resolve for anyone cloning the public repository:
+  # its URL has to be public, and the commit the superproject records has to exist
+  # there. Fetching exactly that commit from that URL is the check.
+  image: public.ecr.aws/docker/library/alpine:3@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+  script:
+    - apk add --no-cache git
+    - url=$(git config -f .gitmodules submodule.project_dependencies/ai-skills.url)
+    - sha=$(git ls-tree HEAD project_dependencies/ai-skills | awk '{print $3}')
+    - echo "ai-skills gitlink ${sha} at ${url}"
+    - |
+      case "$url" in
+        https://github.com/*) ;;
+        *) echo "ai-skills URL is not a public GitHub URL: $url"; exit 1 ;;
+      esac
+    - git init -q /tmp/probe
+    - git -C /tmp/probe fetch -q --depth 1 "$url" "$sha"
+    - echo "ai-skills gitlink is fetchable from the public remote"
+
+js-tests:
+  stage: test
+  # vitest 3.x pulls in rolldown, which imports `styleText` from node:util.
+  # That export requires Node >= 20.12, so the runner image must be Node 20+.
+  image: public.ecr.aws/docker/library/node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0
+  variables:
+    KUBERNETES_MEMORY_REQUEST: "1Gi"
+    KUBERNETES_MEMORY_LIMIT: "2Gi"
+    KUBERNETES_CPU_REQUEST: "1"
+    KUBERNETES_CPU_LIMIT: "2"
+    GIT_SUBMODULE_STRATEGY: normal
+    GIT_SUBMODULE_PATHS: project_dependencies/ai-skills
+  before_script:
+    - cd install_script && npm ci
+  script:
+    - npm test
+  artifacts:
+    when: always
+    paths:
+      - install_script/coverage/
+    expire_in: 1 week
+
+python-tests:
+  stage: test
+  image: public.ecr.aws/docker/library/python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+  variables:
+    KUBERNETES_MEMORY_REQUEST: "1Gi"
+    KUBERNETES_MEMORY_LIMIT: "2Gi"
+    KUBERNETES_CPU_REQUEST: "1"
+    KUBERNETES_CPU_LIMIT: "2"
+    GIT_SUBMODULE_STRATEGY: recursive
+    # Only fetch metric-library (needed via PYTHONPATH below). ai-skills is now
+    # public (GitHub, https) but no Python test needs it; the live
+    # installer↔checker tests in test_verify_integrity.py need node, which this
+    # image lacks, so they skip regardless.
+    GIT_SUBMODULE_PATHS: project_dependencies/metric-library
+    PYTHONPATH: "skills/evaluate-predictions/lib/metric-library"
+  before_script:
+    # git is a TEST dependency here, not a checkout dependency — the runner's helper
+    # container clones the repository and this build container is what runs pytest, so
+    # tests that shell out to git need the binary that `python:3.12-slim` does not ship.
+    - apt-get update && apt-get install -y --no-install-recommends git
+    - apt-get clean && rm -rf /var/lib/apt/lists/*
+    # pyyaml is a test dependency: test_indexing_scope_ceiling.py writes real
+    # inq_config.yaml files, because the spend ceiling is read by parsing that YAML and
+    # a fake parser would not catch a value the real loader reads differently.
+    - pip install --no-cache-dir numpy==2.5.4 boto3==1.43.111 munkres==1.1.4 pydantic==2.13.5 pytest==9.1.1 pyyaml==6.0.3 mcp==2.1.1 plotly==7.1.0 pandas==3.0.6 pathspec==1.1.1 chardet==7.6.0
+  script:
+    # -v on purpose: a skipped line here is silent, and the modules that skip themselves
+    # when a binary is missing cover the expensive failures — an unbounded indexing run,
+    # an unverifiable distribution bundle. A skip is a CI defect, not a pass.
+    - pytest tests/unit/ -v --tb=short --junitxml=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
+    expire_in: 1 week

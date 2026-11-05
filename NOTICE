@@ -1,0 +1,43 @@
+LaunchBridge Agent Skills
+
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+This software is licensed under the MIT-0 License. See the LICENSE file.
+
+------------------------------------------------------------------------------
+Notices
+------------------------------------------------------------------------------
+
+This project is provided as an example and starting point for development. It
+is offered for informational and demonstration purposes only and without
+warranties of any kind. You are solely responsible for testing, validation,
+security and performance assessment, and compliance with your organization's
+requirements before any production use. It reflects current AWS offerings,
+which may change without notice, and creates no commitment from AWS, its
+affiliates, suppliers, or licensors.
+
+------------------------------------------------------------------------------
+Third-Party Components
+------------------------------------------------------------------------------
+
+This repository includes two other AWS sample projects as git submodules, each
+under its own MIT-0 license (see the LICENSE file in each):
+
+  - project_dependencies/ai-skills: https://github.com/aws-samples/sample-ai-skills
+  - project_dependencies/metric-library:
+    https://github.com/aws-samples/sample-metric-library
+
+It does not otherwise bundle or vendor third-party source code or assets. It
+relies on third-party open-source dependencies that are referenced, not
+redistributed here, each retaining its own license:
+
+  - Python dependencies are declared in project_dependencies/pyproject.toml and
+    pinned in project_dependencies/constraints.txt and
+    project_dependencies/requirements.lock.txt. IRIS is installed from its git
+    repository, pinned to a commit.
+  - JavaScript dependencies are declared in package.json and
+    install_script/package.json, and pinned in the package-lock.json beside
+    each.
+
+Consult those manifests and each package's own distribution for its license
+text.

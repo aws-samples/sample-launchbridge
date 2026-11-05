@@ -1,0 +1,17 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+[mcp_servers.launchbridge-qa-server]
+command = "/path/to/launchbridge/base-python"
+args = ["-I", "-S", "/path/to/launchbridge/lb_guard.py", "exec", "/path/to/your/codebase", "--", "-I", "/path/to/your/codebase/.lb_workspace/config/mcp_v1_compat.py", "iris_mcp", "--config", "/path/to/your/codebase/.lb_workspace/indexing_and_qa/inq_config.yaml"]
+timeout = 300000
+startup_timeout_sec = 60
+disabled = false
+gatedBySkill = "indexing-and-qa"
+
+[mcp_servers.aws-documentation-mcp-server]
+command = "/path/to/launchbridge/base-python"
+args = ["-I", "-S", "/path/to/launchbridge/lb_guard.py", "exec-script", "/path/to/your/codebase", "awslabs.aws-documentation-mcp-server", "--"]
+env = { "FASTMCP_LOG_LEVEL" = "ERROR", "AWS_DOCUMENTATION_PARTITION" = "aws" }
+startup_timeout_sec = 60
+disabled = false
+autoApprove = []

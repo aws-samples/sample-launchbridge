@@ -1,0 +1,149 @@
+###############################################################################
+#  Python artifacts
+###############################################################################
+__pycache__/
+*.py[cod]          # compiled byte-code
+*.pyo
+*.pyd
+*.so               # C-extensions on Linux/macOS
+*.dll              # C-extensions on Windows
+
+# Distribution / build output
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+*.whl
+
+###############################################################################
+#  Virtual environments
+###############################################################################
+# (keep only the one you actually use)
+env/
+venv/
+.venv/
+.venv_lint/
+.venv_lb
+ENV/
+.conda/
+.mypy_cache/
+
+###############################################################################
+#  Testing & coverage
+###############################################################################
+.pytest_cache/
+.tox/
+.coverage
+coverage.xml
+htmlcov/
+.nox/
+.lint_reports
+.ruff_cache
+
+###############################################################################
+#  Static analysis / tooling
+###############################################################################
+.mypy_cache/
+.pyre/
+.cache/
+ruff_cache/
+.dmypy.json
+
+###############################################################################
+#  Packaging helpers
+###############################################################################
+*.manifest
+*.spec
+*.log
+
+###############################################################################
+#  Secrets / environment files
+###############################################################################
+.env
+.env.*             # .env.local, .env.dev, etc.
+!frontend/.env
+*.pem
+*.crt
+*.key
+
+###############################################################################
+#  Configuration files (user-specific)
+###############################################################################
+/config.yaml
+
+###############################################################################
+#  System-specific files
+###############################################################################
+.DS_Store
+
+###############################################################################
+#  Editors & IDEs
+###############################################################################
+# VS Code
+.vscode/
+# PyCharm / IntelliJ
+.idea/
+# Sublime
+*.sublime-workspace
+*.sublime-project
+
+###############################################################################
+#  Default Cache Directory
+###############################################################################
+**/.iris_cache/
+# Legacy cache dir name (pre-iris rename)
+**/.code_intel_cache/
+
+# CDK
+cdk.out/
+*.d.ts
+
+# OS
+.DS_Store?
+._*
+
+# Node
+node_modules/
+
+# IDE
+.ash/
+!frontend/src/config/*
+
+# installation folders in target codebase
+.kiro/
+.lb_workspace/
+.project_artifacts/
+
+# ai-skills SDD workflow (context + working root)
+.context/
+docs/working
+
+# Convenience Directories
+.archive/
+.temp/
+.delete/
+.data/
+.output/
+# Also WITHOUT the trailing slash. `.output/` matches a directory only, so a SYMLINK
+# named `.output` is not ignored — and `git add tests/` will then happily track it.
+# That happened: two symlinks created for a verification run were committed, and the
+# checkout replaced the real `.output` directories with self-referential broken links,
+# destroying the preserved run artifacts inside them. Keep both forms.
+.output
+
+# Claude
+.claude/CLAUDE.md
+.claude/worktrees/
+
+# OpenSpec (local planning tooling, not part of the LaunchBridge deliverable)
+openspec/
+.claude/commands/opsx/
+.claude/skills/openspec-*/
+
+# Terraform
+.terraform/
+
+# SBOM output from install_script/make-sbom.sh
+sbom/

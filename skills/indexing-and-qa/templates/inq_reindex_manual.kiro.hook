@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Re-index Codebase & Artifacts",
+  "description": "Manually trigger re-indexing of codebase and engagement artifacts. Use this instead of automatic triggers to avoid re-indexing during active editing.",
+  "version": "1",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Re-index the codebase and engagement artifacts using the indexing_and_qa skill (Task 2) with --mode both to update the launchbridge index with recent changes."
+  }
+}

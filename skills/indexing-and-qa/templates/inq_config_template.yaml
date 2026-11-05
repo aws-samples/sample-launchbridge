@@ -1,0 +1,311 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+# Configuration for LaunchBridge Indexing and Q&A skill
+
+# The codebase to evaluate/index
+codebase_dir: /path/to/your/codebase
+
+# The relatve path to code evaluation/indexing output (default path)
+output_dir: .lb_workspace/indexing_and_qa
+
+# The relative path to the project artifacts (default path)
+artifact_dir: .project_artifacts
+
+# CEILING ON THE SIZE OF ONE INDEXING RUN.
+#
+# Indexing issues at least one Amazon Bedrock call per file, and neither IRIS nor
+# Bedrock enforces a request or spend cap (see the concurrency note further down).
+# These two keys are the enforced bound: before indexing, LaunchBridge counts what
+# would be summarized using the same ignore_patterns and change detection IRIS
+# itself uses, and refuses to start if the count is over the ceiling. Nothing is
+# sent to Bedrock when it refuses; the script exits 3 and names the count, the
+# ceiling and the regions involved.
+#
+# Only files that actually need summarizing count, so an incremental re-index of a
+# few changed files is unaffected by these values however large the repository is.
+#
+# The defaults are sized to catch a mistake — the wrong codebase_dir, or an
+# ignore_patterns list that stopped matching after a restructure — not to
+# second-guess a deliberate large index. If a real repository is genuinely bigger
+# than this, raise the value here; that is a durable edit someone can review, which
+# is why there is no command-line override.
+#
+# To see the count without indexing:
+#   inq_run_indexing.sh <codebase_path> --mode both --report-scope
+#
+# Set to 0 to remove a ceiling. A run with any ceiling at 0 is refused unless it is
+# also started with --allow-unbounded, so an unlimited run is always a deliberate,
+# per-run choice. A run whose size cannot be measured is always refused, ceilings or
+# not: the same file list feeds the credential scan and the transmission log. Pair
+# an unbounded run with an AWS Budgets alarm on the account (see the
+# indexing-and-qa skill's setup notes).
+lb_max_files_per_run: 5000
+lb_max_artifacts_per_run: 500
+
+# Maximum size of artifact files for indexing (in bytes). Artifacts larger than this will be skipped.
+# Default: 30MB. For video files, see artifact_video_max_file_size below.
+artifact_max_file_size: 30_000_000
+
+# Maximum size of video files for indexing (in bytes). Videos larger than this will be skipped.
+# Video files are naturally much larger than documents, so this has a separate, higher limit.
+# Default: 300MB
+artifact_video_max_file_size: 300_000_000
+
+# Maximum number of parallel workers for artifact extraction and summarization.
+# Default: 4. Increase for faster processing on machines with more cores.
+artifact_max_workers: 4
+
+# Enable OCR for image-only PDF pages.
+# When enabled, pages with no extractable text are rendered as images and
+# processed by the selected OCR provider (see artifact_ocr_provider below).
+# Default: false (image-only pages are skipped with a warning)
+artifact_ocr_enabled: true
+
+# OCR provider for image-only PDF pages. Options:
+#   "llm"      — uses a multimodal LLM (Claude via Bedrock) to extract text from page images.
+#                 Reuses the first file_summarizer model. Requires Bedrock invoke permissions.
+#                 Better at understanding complex layouts, tables, and context.
+#   "textract" — uses Amazon Textract DetectDocumentText API.
+#                 Requires textract:DetectDocumentText permission.
+#                 Faster and cheaper per page, good for straightforward text extraction.
+# Default: "llm"
+artifact_ocr_provider: llm
+
+# Maximum number of PDF pages to OCR per indexing run.
+# Limits API calls to control cost. Once the limit is reached,
+# remaining image-only pages are skipped with a warning.
+# Set to 0 for unlimited. Default: 100
+artifact_ocr_max_pages: 100
+
+# Whether to generate the optional assembled knowledge_base.md for human review
+# Default: false
+artifact_generate_knowledge_base: false
+
+# Enable video transcription for video files (.mp4, .mov, .avi, .mkv).
+# When enabled, video files are processed with Amazon Transcribe (speech-to-text)
+# and LLM-based frame analysis (3 keyframes: near beginning, middle, near end).
+# Requires an S3 bucket for temporary video upload during transcription.
+# Cost: billed per minute of audio at Amazon Transcribe rates; see
+# https://aws.amazon.com/transcribe/pricing/ for the current price in your Region.
+# A 1-hour video takes about 10-15 minutes to transcribe.
+# Default: false (video files indexed by metadata only)
+artifact_transcription_enabled: false
+
+# S3 bucket for temporary video upload during Amazon Transcribe processing.
+# Required when artifact_transcription_enabled is true.
+# The bucket must be accessible with your current AWS credentials.
+artifact_transcribe_s3_bucket: ""
+
+# MCP Server: List of tools to enable (default: codebase_artifact_query, do not change it)
+mcp_enabled_tools:
+  - codebase_artifact_query
+
+# AWS Bedrock model configurations for indexing
+# Make sure you have access to all the following models in the corresponding regions
+#
+# CONCURRENCY AND SPEND BOUND — read before indexing a large repository.
+#
+# The list below is the concurrency control for codebase summarization. IRIS
+# starts exactly one worker per model-region pair, each pulling from a shared
+# file queue (iris/summarize/file_summarizer.py: ThreadPoolExecutor with
+# max_workers=n_models_used). There is no separate throttle, no request cap, and
+# no spend cap: the 3 pairs shipped below mean 3 concurrent Bedrock streams,
+# and indexing issues at least one model call per non-ignored file.
+#
+# The size of a run is bounded by lb_max_files_per_run / lb_max_artifacts_per_run
+# above. Concurrency is not bounded by anything except the length of this list.
+#
+# Before indexing, know roughly how many files will be summarized — run
+# `inq_run_indexing.sh <codebase_path> --mode both --report-scope` for the exact
+# count — and:
+#
+#   * Trim this list to bound concurrency. Fewer pairs = fewer parallel calls and
+#     less chance of tripping per-region on-demand throughput quotas; indexing
+#     just takes longer. One pair is a legitimate setting.
+#   * Trim this list to bound geography. Every region here receives repository
+#     content. If the engagement restricts where client code may be processed,
+#     remove the regions that are not permitted. The defaults are 3 us. pairs,
+#     processed in the United States; the eu. and global. pairs below are
+#     commented out as opt-ins. Indexing refuses (exit 4)
+#     until the destinations here are confirmed for the engagement, and asks again
+#     whenever one is added; see --confirm-data-handling in the indexing script.
+#   * Widen `ignore_patterns` (bottom of this file) rather than paying to
+#     summarize vendored code, fixtures and generated output.
+#   * Set a budget alarm on the account before the first large run. AWS Budgets
+#     with an Amazon Bedrock service filter is the usual mechanism; Bedrock has
+#     no built-in per-request spend limit, so nothing else will stop a runaway
+#     re-index.
+#   * Check Service Quotas for the on-demand tokens-per-minute and
+#     requests-per-minute limits of each model in each region listed. Throttling
+#     surfaces as retries and a slow run, not a clear error.
+#
+# Artifact indexing is bounded separately: artifact_max_workers above, and
+# artifact_ocr_max_pages for OCR calls. Video transcription is billed per minute
+# (see artifact_transcription_enabled) and is off by default.
+# Model IDs starting with a geography (us., us-gov., eu., apac., jp., au., ca.)
+# or global. are cross-region inference profiles: Bedrock may process the request
+# in another region of that geography (any commercial region, for global.), not
+# only the region named here. The
+# defaults below are us. profiles only, so processing stays in the United
+# States; the data-handling confirmation shows each profile's scope. Confirm
+# that the engagement's terms allow it, or use a single-region model ID.
+model_configuration:
+  file_summarizer:
+    # You can leverage multiple model-region pairs to speed up file summarization
+    # The workload will be distributed across listed model-region pairs
+    # The more model-region pairs you provide, the faster the file summarization
+    # will be — and the more concurrent Bedrock calls you make. See the
+    # concurrency and spend note above before changing this list.
+    models:
+      - model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0
+        region: us-west-2
+      - model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0
+        region: us-east-2
+      - model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0
+        region: us-east-1
+      # More pairs make indexing faster, but outside the US. Uncomment them only
+      # if the engagement's data-handling terms allow processing in the EU (eu.)
+      # or in any commercial AWS region (global.):
+      # - model_id: eu.anthropic.claude-haiku-4-5-20251001-v1:0
+      #   region: eu-west-1
+      # - model_id: eu.anthropic.claude-haiku-4-5-20251001-v1:0
+      #   region: eu-west-3
+      # - model_id: eu.anthropic.claude-haiku-4-5-20251001-v1:0
+      #   region: eu-central-1
+      # - model_id: eu.anthropic.claude-haiku-4-5-20251001-v1:0
+      #   region: eu-north-1
+      # - model_id: global.anthropic.claude-haiku-4-5-20251001-v1:0
+      #   region: ap-northeast-1
+      # - model_id: global.anthropic.claude-haiku-4-5-20251001-v1:0
+      #   region: ap-southeast-1
+      # - model_id: global.anthropic.claude-haiku-4-5-20251001-v1:0
+      #   region: ap-south-1
+  orchestrator:
+    model_id: us.anthropic.claude-sonnet-4-6
+    region: us-east-1
+  file_identifier:
+    model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0
+    region: us-east-2
+
+# Amazon Bedrock Guardrails for the Q&A agent (optional, recommended). Create a
+# guardrail in the Bedrock console with a prompt-attack filter, then set its ID
+# and version here. The Q&A orchestrator's and the file and artifact
+# identifiers' model calls are then evaluated against it, which helps stop
+# instructions planted in the indexed repository from steering the answer.
+# IRIS c2f9b59 does not apply it to indexing (file and artifact summaries). The AWS profile needs bedrock:ApplyGuardrail on it:
+# the OptionalBedrockGuardrailForQaAgent statement in
+# skills/lb-setup/templates/bedrock-least-privilege-policy.json grants it (remove
+# that statement if you do not use a guardrail).
+# guardrail_id: "your-guardrail-id"
+# guardrail_version: "1"
+
+# Whether to enable web search functionality (Do NOT Change!)
+web_search: false
+
+# Internal MCP Server Integration - Connect to external MCP servers for additional capabilities (Do NOT Change!)
+mcp_servers:
+  aws_documentation:
+    enabled: false
+
+  agentcore_docs:
+    enabled: false
+
+  strands_agents_docs:
+    enabled: false
+
+# List of patterns to ignore when generating directory tree (Please Change! To avoid indexing unnecessary objects in your codebase)
+ignore_patterns:
+  # Dotfiles and dot-directories (covers .git/, .github/, .gitlab/, .idea/, .env/,
+  # .venv*/, .ruff_cache/, .pytest_cache/, .iris_cache/, .kiro/, .lb_workspace/,
+  # .project_artifacts/, .ash/, .DS_Store, .coverage, .Python, .installed.cfg, .gitkeep, etc.)
+  - ".*"
+  - ".*/"
+
+  # Build and distribution output
+  - "build/"
+  - "_build/"
+  - "dist/"
+  - "cdk.out/"
+  - "codebase-output/"
+  - "launchbridge/"
+  - ".launchbridge/"
+
+  # Dependencies
+  - "node_modules/"
+  - "venv*/"
+  - "eggs/"
+  - "develop-eggs/"
+  - "*.egg-info/"
+  - "*.egg"
+
+  # Python bytecode and native extensions
+  - "*.py[cod]"
+  - "*$py.class"
+  - "*.so"
+  - "__pycache__/"
+
+  # Test targets and runtime artifacts
+  - "tests/targets/"
+  - "repl_state/"
+  - "codebase_artifacts/*"
+
+  # Generated / downloaded content
+  - "downloads/"
+  - "output/"
+  - "outputs/"
+  - "archive/"
+  - "_templates/"
+  - "test/"
+
+  # Binary and media files
+  - "*.png"
+  - "*.jpg"
+  - "*.jpeg"
+  - "*.bmp"
+  - "*.ico"
+  - "*.zip"
+  - "*.gz"
+  - "*.tar"
+  - "*.jar"
+  - "*.class"
+  - "*.exe"
+  - "*.lock"
+  - "*.log"
+
+  # Credentials, keys and state files: never sent for summarisation. The
+  # pre-flight secret scan also refuses a run that would send a file containing
+  # a credential in a format it knows, whatever the file's name: PEM, PGP and
+  # PuTTY private keys, AWS, GitHub, GitLab, Slack, Stripe and Google keys,
+  # OpenAI project keys (sk-proj-), Slack webhooks, and a password in a URL. It reads text, notebooks and
+  # the text of DOCX, PPTX, XLSX and PDF artifacts. It doesn't read images
+  # (embedded images and image-only PDF pages go to OCR when
+  # artifact_ocr_enabled is on) or video and audio (sent for transcription).
+  # Other secrets and those formats aren't checked, so keep them out of the
+  # codebase and the artifact folder, or list them here.
+  - "*.pem"
+  - "*.key"
+  - "*.p12"
+  - "*.pfx"
+  - "*.jks"
+  - "*.keystore"
+  - "id_rsa*"
+  - "id_dsa*"
+  - "id_ecdsa*"
+  - "id_ed25519*"
+  - "credentials"
+  - "credentials.json"
+  - "secrets.yml"
+  - "secrets.yaml"
+  - "*.tfstate"
+  - "*.tfstate.*"
+  - "terraform.tfvars"
+  - "*.auto.tfvars"
+  - "kubeconfig"
+  - "*.kubeconfig"
+  - "*.sqlite"
+  - "*.sqlite3"
+  - "*.db"
+
+  # Agent steering files (not useful for codebase Q&A)
+  - "AGENTS.md"
+  - "CLAUDE.md"
