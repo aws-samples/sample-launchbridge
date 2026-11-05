@@ -21,7 +21,118 @@ It ships as a CLI installer (`launchbridge`) that copies or symlinks the skills 
 - **Measure** — `operational-metrics` instruments GenAI calls and produces cost/latency reports with scaling projections
 - **Feature Recommendation** — `feature-recommendations` can recommend future development areas to expand features or add new ones and get a feel for production readiness
 
-### AI Skills (optional add-on)
+## Getting Started
+
+### Installing Skills
+
+The skill installer CLI helps you install LaunchBridge skills into your target repositories.
+
+For active development, use 'symlink' so edits to skills in this repo are immediately available in your target project without reinstalling.
+
+> **Note:** Kiro IDE does not currently support symlinked skill files. If you encounter `'is not a file'` errors, reinstall using 'copy' mode instead. See [kirodotdev/Kiro#6401](https://github.com/kirodotdev/Kiro/issues/6401) for details.
+
+#### Prerequisites
+
+- Python version 3.12 or higher
+- [Node.js](https://nodejs.org/) (v20.12 or higher recommended)
+- npm (comes with Node.js)
+- AWS Profile with Credentials
+
+#### AWS Credentials
+
+AWS CLI v2 with at least one profile configured is required — see [AWS CLI v2 installation guide](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html).
+
+**Setting up an AWS profile:** use temporary credentials from AWS IAM Identity Center where you can. Configure the profile once, then sign in when the session expires:
+
+```bash
+aws configure sso --profile my-profile
+aws sso login --profile my-profile
+```
+
+If you must use long-term IAM user access keys, `aws configure --profile my-profile` stores them in `~/.aws/credentials`; rotate them regularly.
+
+**Use a profile scoped to Bedrock inference.** The core skills need only `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` (plus `bedrock:ApplyGuardrail` if you enable the optional Q&A guardrail) and create no AWS resources; the optional features in the table below need more, and video transcription writes S3 objects and Transcribe jobs. Anything broader is inherited by any prompt injection through indexed content, or any compromised package in `.venv_lb`. A least-privilege policy to start from is in [`skills/lb-setup/templates/bedrock-least-privilege-policy.json`](skills/lb-setup/templates/bedrock-least-privilege-policy.json) (replace `ACCOUNT_ID`, trim models and regions to the ones you use). lb-setup checks the profile's effective permissions and asks before indexing if it finds a broader one.
+
+Optional features need more, only when you turn them on. Scope each to its resources:
+
+| Feature                                                        | Actions                                                                                                                                                                                                                                                      |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Textract OCR for artifacts (`artifact_ocr_provider: textract`) | `textract:DetectDocumentText`                                                                                                                                                                                                                                |
+| Video transcription (`artifact_transcription_enabled`)         | `transcribe:StartTranscriptionJob`, `transcribe:GetTranscriptionJob`, `transcribe:DeleteTranscriptionJob`; on the transcription bucket, `s3:GetBucketLocation`, and on its `iris-transcribe-temp/` prefix, `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject` |
+| Synthetic audio in data-wrangler (Amazon Polly)                | `polly:SynthesizeSpeech`, `polly:DescribeVoices`                                                                                                                                                                                                             |
+
+For example, the S3 part of transcription can be limited to `arn:aws:s3:::<bucket>` for `s3:GetBucketLocation` and `arn:aws:s3:::<bucket>/iris-transcribe-temp/*` for the object actions.
+
+#### One-time Setup for Development
+
+Run the setup script once, which will initialize submodules and link the `launchbridge` command globally:
+
+```bash
+npm run setup
+```
+
+#### Adding LaunchBridge Skills to target codebase
+
+Next, navigate to your target repository and run `launchbridge` to install the skills:
+
+```bash
+cd /path/to/your-target-repo
+launchbridge
+```
+
+The installer will:
+
+1. Prompt you to select which agents to install for (Kiro, Claude Code, etc.)
+2. Prompt you to choose the installation method (symlink or copy)
+3. Install all available skills to the appropriate directories
+4. Create the `.lb_workspace` folder structure for LaunchBridge
+5. Generate `.lb_workspace/config/python_deps/pyproject.toml` with the correct dependencies
+
+> **Note:** AWS credentials and profile selection are handled by `lb-setup` (the agent skill), not the CLI installer. Run `lb-setup` in your agent after installation to configure your AWS profile and complete setup.
+
+#### Updating LaunchBridge
+
+To pull the latest changes and sync them to your target project in one command:
+
+```bash
+cd /path/to/your-target-repo
+launchbridge update
+```
+
+This fetches the current branch and shows what would change — incoming commits, changed `SKILL.md` instructions, installer files and submodule pointers — and applies it only after you confirm (default **no**; for scripted use, review the preview and run `launchbridge update --apply <commit>`). It then re-copies changed skills (for copy installs), resets their setup status, and regenerates dependencies if needed. Then open your agent and say "update launchbridge" to re-run lb-setup for the changed skills; lb-setup holds back changed skills until you have reviewed them and refreshed the digest baseline.
+
+**On a release tag.** `launchbridge update` follows the branch your clone is on. If you checked out a release tag, the clone has no branch to follow, so the command stops and shows these steps instead. To move to a newer release, verify and check out its tag, then re-run the installer in your target project:
+
+```bash
+cd /path/to/launchbridge
+git fetch --tags origin
+git -c gpg.ssh.allowedSignersFile=~/.config/launchbridge/allowed_signers verify-tag <new-tag>
+git checkout <new-tag>
+git submodule update --init --recursive
+cd /path/to/your-target-repo
+launchbridge
+```
+
+If you need to change your skill selection or agents, `git pull` (or check out the new release tag) in the LaunchBridge clone, then re-run `launchbridge` in your target project. See [Changing Skills or Agents](docs/USER_GUIDE.md#changing-skills-or-agents).
+
+#### Verifying a release
+
+Release tags are signed with the LaunchBridge release SSH key:
+
+- Public key: `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICDEh/WIQ2rf05S0AR+Kg18OC1P1G3N7pKOK22nmReP+`
+- Fingerprint: `SHA256:0ChZsz0VJGeyUCI8MWNwGRCitwinXeVUlvB2SqQOKrA`
+
+Check that the fingerprint matches the one shown on the GitHub release page, then verify the tag you check out:
+
+```bash
+mkdir -p ~/.config/launchbridge
+echo 'launchbridge-release namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICDEh/WIQ2rf05S0AR+Kg18OC1P1G3N7pKOK22nmReP+' > ~/.config/launchbridge/allowed_signers
+git -c gpg.ssh.allowedSignersFile=~/.config/launchbridge/allowed_signers verify-tag v1.1.0
+```
+
+A good signature prints `Good "git" signature for launchbridge-release`. Do not use a tag that fails verification. `launchbridge update` shows the incoming commits for review but does not itself verify tag signatures.
+
+## AI Skills (optional add-on)
 
 LaunchBridge can also install skills from the open-source **ai-skills** library ([aws-samples/sample-ai-skills](https://github.com/aws-samples/sample-ai-skills), MIT-0, pinned at v0.3.4; [documentation](https://github.com/aws-samples/sample-ai-skills/tree/v0.3.4/docs)). They give the agent your project's patterns, constraints and conventions, so its output is consistent from one run to the next. The installer offers them as one bundle:
 
@@ -168,117 +279,6 @@ The files and artifacts generated by the LaunchBridge skills and tools should go
     ├── during-project/             # Presentations, meeting notes, reports, technical docs
     └── post-project/               # Final readouts, roadmaps, production readiness docs
 ```
-
-# Getting Started
-
-## Installing Skills
-
-The skill installer CLI helps you install LaunchBridge skills into your target repositories.
-
-For active development, use 'symlink' so edits to skills in this repo are immediately available in your target project without reinstalling.
-
-> **Note:** Kiro IDE does not currently support symlinked skill files. If you encounter `'is not a file'` errors, reinstall using 'copy' mode instead. See [kirodotdev/Kiro#6401](https://github.com/kirodotdev/Kiro/issues/6401) for details.
-
-### Prerequisites
-
-- Python version 3.12 or higher
-- [Node.js](https://nodejs.org/) (v20.12 or higher recommended)
-- npm (comes with Node.js)
-- AWS Profile with Credentials
-
-### AWS Credentials
-
-AWS CLI v2 with at least one profile configured is required — see [AWS CLI v2 installation guide](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html).
-
-**Setting up an AWS profile:** use temporary credentials from AWS IAM Identity Center where you can. Configure the profile once, then sign in when the session expires:
-
-```bash
-aws configure sso --profile my-profile
-aws sso login --profile my-profile
-```
-
-If you must use long-term IAM user access keys, `aws configure --profile my-profile` stores them in `~/.aws/credentials`; rotate them regularly.
-
-**Use a profile scoped to Bedrock inference.** The core skills need only `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` (plus `bedrock:ApplyGuardrail` if you enable the optional Q&A guardrail) and create no AWS resources; the optional features in the table below need more, and video transcription writes S3 objects and Transcribe jobs. Anything broader is inherited by any prompt injection through indexed content, or any compromised package in `.venv_lb`. A least-privilege policy to start from is in [`skills/lb-setup/templates/bedrock-least-privilege-policy.json`](skills/lb-setup/templates/bedrock-least-privilege-policy.json) (replace `ACCOUNT_ID`, trim models and regions to the ones you use). lb-setup checks the profile's effective permissions and asks before indexing if it finds a broader one.
-
-Optional features need more, only when you turn them on. Scope each to its resources:
-
-| Feature                                                        | Actions                                                                                                                                                                                                                                                      |
-| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Textract OCR for artifacts (`artifact_ocr_provider: textract`) | `textract:DetectDocumentText`                                                                                                                                                                                                                                |
-| Video transcription (`artifact_transcription_enabled`)         | `transcribe:StartTranscriptionJob`, `transcribe:GetTranscriptionJob`, `transcribe:DeleteTranscriptionJob`; on the transcription bucket, `s3:GetBucketLocation`, and on its `iris-transcribe-temp/` prefix, `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject` |
-| Synthetic audio in data-wrangler (Amazon Polly)                | `polly:SynthesizeSpeech`, `polly:DescribeVoices`                                                                                                                                                                                                             |
-
-For example, the S3 part of transcription can be limited to `arn:aws:s3:::<bucket>` for `s3:GetBucketLocation` and `arn:aws:s3:::<bucket>/iris-transcribe-temp/*` for the object actions.
-
-### One-time Setup for Development
-
-Run the setup script once, which will initialize submodules and link the `launchbridge` command globally:
-
-```bash
-npm run setup
-```
-
-### Adding LaunchBridge Skills to target codebase
-
-Next, navigate to your target repository and run `launchbridge` to install the skills:
-
-```bash
-cd /path/to/your-target-repo
-launchbridge
-```
-
-The installer will:
-
-1. Prompt you to select which agents to install for (Kiro, Claude Code, etc.)
-2. Prompt you to choose the installation method (symlink or copy)
-3. Install all available skills to the appropriate directories
-4. Create the `.lb_workspace` folder structure for LaunchBridge
-5. Generate `.lb_workspace/config/python_deps/pyproject.toml` with the correct dependencies
-
-> **Note:** AWS credentials and profile selection are handled by `lb-setup` (the agent skill), not the CLI installer. Run `lb-setup` in your agent after installation to configure your AWS profile and complete setup.
-
-### Updating LaunchBridge
-
-To pull the latest changes and sync them to your target project in one command:
-
-```bash
-cd /path/to/your-target-repo
-launchbridge update
-```
-
-This fetches the current branch and shows what would change — incoming commits, changed `SKILL.md` instructions, installer files and submodule pointers — and applies it only after you confirm (default **no**; for scripted use, review the preview and run `launchbridge update --apply <commit>`). It then re-copies changed skills (for copy installs), resets their setup status, and regenerates dependencies if needed. Then open your agent and say "update launchbridge" to re-run lb-setup for the changed skills; lb-setup holds back changed skills until you have reviewed them and refreshed the digest baseline.
-
-**On a release tag.** `launchbridge update` follows the branch your clone is on. If you checked out a release tag, the clone has no branch to follow, so the command stops and shows these steps instead. To move to a newer release, verify and check out its tag, then re-run the installer in your target project:
-
-```bash
-cd /path/to/launchbridge
-git fetch --tags origin
-git -c gpg.ssh.allowedSignersFile=~/.config/launchbridge/allowed_signers verify-tag <new-tag>
-git checkout <new-tag>
-git submodule update --init --recursive
-cd /path/to/your-target-repo
-launchbridge
-```
-
-If you need to change your skill selection or agents, `git pull` (or check out the new release tag) in the LaunchBridge clone, then re-run `launchbridge` in your target project. See [Changing Skills or Agents](docs/USER_GUIDE.md#changing-skills-or-agents).
-
-### Verifying a release
-
-Release tags are signed with the LaunchBridge release SSH key:
-
-- Public key: `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICDEh/WIQ2rf05S0AR+Kg18OC1P1G3N7pKOK22nmReP+`
-- Fingerprint: `SHA256:0ChZsz0VJGeyUCI8MWNwGRCitwinXeVUlvB2SqQOKrA`
-
-Check that the fingerprint matches the one shown on the GitHub release page, then verify the tag you check out:
-
-```bash
-mkdir -p ~/.config/launchbridge
-echo 'launchbridge-release namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICDEh/WIQ2rf05S0AR+Kg18OC1P1G3N7pKOK22nmReP+' > ~/.config/launchbridge/allowed_signers
-git -c gpg.ssh.allowedSignersFile=~/.config/launchbridge/allowed_signers verify-tag v1.1.0
-```
-
-A good signature prints `Good "git" signature for launchbridge-release`. Do not use a tag that fails verification. `launchbridge update` shows the incoming commits for review but does not itself verify tag signatures.
 
 ## Documentation
 
