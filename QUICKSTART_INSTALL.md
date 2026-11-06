@@ -12,7 +12,7 @@ Get LaunchBridge installed from its git repository and running in under 5 minute
 Before you start, make sure you have:
 
 - **Git**
-- **Node.js** v20.12 or higher — [nodejs.org](https://nodejs.org/)
+- **Node.js** v22.12 or higher — [nodejs.org](https://nodejs.org/)
 - **Python** 3.12 or higher
 - **AWS CLI v2** with at least one profile configured — [install guide](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html). Prefer a profile scoped to Bedrock inference: the core skills need nothing more. A starting policy is in `skills/lb-setup/templates/bedrock-least-privilege-policy.json`; the optional features that need more are listed in the README's AWS Credentials section.
 
