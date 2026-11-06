@@ -21,7 +21,7 @@
     "inquirer": "^9.2.12"
   },
   "engines": {
-    "node": ">=20.12.0"
+    "node": ">=22.12.0"
   },
   "keywords": [
     "cli",

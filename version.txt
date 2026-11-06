@@ -15,6 +15,6 @@ Known Dependency Advisories (not yet fixed)
 - tornado 6.5.10, a dependency of IRIS: GHSA-r4j5-9xpp-3985 and GHSA-pcg2-g6cj-q92c (HTTP server denial of service) and GHSA-pw9p-v7r6-gx4p (open redirect in RedirectHandler, low). Not reachable: LaunchBridge starts no tornado server. Fixed in 6.6, which IRIS allows; it will be picked up at the next dependency update.
 
 Upgrade Notes
-- Requires Node.js 20.12 or later and Python 3.12 or later
+- Requires Node.js 22.12 or later and Python 3.12 or later
 - After updating, re-run the launchbridge installer in each project, then lb-setup in your agent: lb-setup builds .venv_lb only from dependency files the installer recorded on this machine, and rebuilds a .venv_lb it didn't record
 - LaunchBridge deploys no infrastructure; explicitly invoked AWS and Bedrock workflows may incur charges

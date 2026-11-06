@@ -34,7 +34,7 @@ For active development, use 'symlink' so edits to skills in this repo are immedi
 #### Prerequisites
 
 - Python version 3.12 or higher
-- [Node.js](https://nodejs.org/) (v20.12 or higher recommended)
+- [Node.js](https://nodejs.org/) (v22.12 or higher recommended)
 - npm (comes with Node.js)
 - AWS Profile with Credentials
 
