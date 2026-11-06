@@ -1,12 +1,12 @@
-<!-- Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. -->
-<!-- SPDX-License-Identifier: MIT-0 -->
-
 ---
 
 name: lb-setup
 description: "Meta skill that orchestrates the setup of all LaunchBridge skills in one go. Use when the user says 'setup launchbridge', 'set up LB', 'setup LB skills', 'initialize LB', 'bootstrap LB', 'set up ci workspace', 'configure LB', or 'setup skills'. Also triggers for upgrade and update requests: 'upgrade launchbridge', 'update launchbridge', 'apply launchbridge update', 'update LB skills', 'upgrade LB'. Also triggers for status and resume requests: 'what skills need setup', 'what's the setup status', 'resume setup', or 'continue setup'. Trigger this skill even when the user doesn't say 'launchbridge' explicitly — for example when they say 'get the AI assistant ready', 'prepare this repo for AI coding', 'I just cloned this and want to set up the coding assistant', or 'what do I need to configure to use the AI tools here'."
 
 ---
+
+<!-- Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. -->
+<!-- SPDX-License-Identifier: MIT-0 -->
 
 # LaunchBridge Setup — Meta Skill
 
