@@ -1,0 +1,20 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Weekly version-update PRs for the pinned GitHub Actions and the installer's
+# npm dependencies. Security alerts and security-update PRs are enabled
+# separately in Settings -> Code security.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /install_script
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

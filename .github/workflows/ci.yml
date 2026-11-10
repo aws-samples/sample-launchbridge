@@ -1,0 +1,272 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# CI for LaunchBridge: lint, tests, ASH security scan, SBOM and, on pull
+# requests, dependency review. Ported from the former .gitlab-ci.yml.
+#
+# Make these checks required with a branch ruleset on main
+# (Settings -> Rules -> Rulesets -> "Require status checks to pass").
+#
+# Actions are pinned to full commit SHAs; the tag is in the trailing comment.
+# Bump the SHA and the comment together.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege by default; jobs that need more ask for it.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+
+jobs:
+  format-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SHELLCHECK_VERSION: "0.10.0"
+      # SHA-256 of the ShellCheck release archive. Update with the version.
+      SHELLCHECK_SHA256: "6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87"
+      CODESPELL_VERSION: "2.4.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Install ShellCheck (pinned, checksum verified)
+        run: |
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/shellcheck.tar.xz" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  $RUNNER_TEMP/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}" >> "$GITHUB_PATH"
+      # ruff, Prettier, ShellCheck and yamllint, with the same versions and
+      # exclusions developers run locally.
+      - name: Lint and format check
+        run: ./run_lint.sh --check
+      - name: Spell check (non-blocking)
+        if: always()
+        run: |
+          pip install --no-cache-dir "codespell==${CODESPELL_VERSION}"
+          codespell --skip=".git,.venv,.venv_lint,node_modules,*.pyc,.ash,dist,build,package-lock.json,./project_dependencies,./skills" \
+            --ignore-words-list="Skelton,caf,ot,sme,trough" . || echo "::warning::codespell found typos"
+      - name: Large file check (non-blocking)
+        if: always()
+        run: |
+          large=$(find . -type f -size +100M ! -path "./.git/*" ! -path "*/.venv*/*" ! -path "*/node_modules/*" ! -path "./.ash/*" ! -path "./docs/*")
+          if [ -n "$large" ]; then
+            echo "::warning::Files over 100 MB found"
+            echo "$large"
+          fi
+
+  js-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: true
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Install installer dependencies
+        working-directory: install_script
+        run: npm ci --ignore-scripts
+      - name: Run vitest
+        working-directory: install_script
+        run: npm test
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: js-coverage
+          path: install_script/coverage/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  python-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONPATH: "skills/evaluate-predictions/lib/metric-library"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      # pyyaml is a test dependency: test_indexing_scope_ceiling.py writes real
+      # inq_config.yaml files, because the spend ceiling is read by parsing that
+      # YAML and a fake parser would not catch a value the real loader reads
+      # differently.
+      - name: Install test dependencies
+        run: >-
+          pip install --no-cache-dir numpy==2.5.4 boto3==1.43.111 munkres==1.1.4
+          pydantic==2.13.5 pytest==9.1.1 pyyaml==6.0.3 mcp==2.1.1 plotly==7.1.0
+          pandas==3.0.6 pathspec==1.1.1 chardet==7.6.0
+      # -v on purpose: a skipped line here is silent, and the modules that skip
+      # themselves when a binary is missing cover the expensive failures. A skip
+      # is a CI defect, not a pass.
+      - name: Run pytest
+        run: pytest tests/unit/ -v --tb=short --junitxml=report.xml
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: python-test-report
+          path: report.xml
+          retention-days: 7
+
+  ai-skills-gitlink:
+    # The ai-skills submodule must resolve for anyone cloning the public
+    # repository: its URL has to be public, and the commit the superproject
+    # records has to exist there. Fetching exactly that commit is the check.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fetch the recorded ai-skills commit from its public URL
+        run: |
+          url=$(git config -f .gitmodules submodule.project_dependencies/ai-skills.url)
+          sha=$(git ls-tree HEAD project_dependencies/ai-skills | awk '{print $3}')
+          echo "ai-skills gitlink ${sha} at ${url}"
+          case "$url" in
+            https://github.com/*) ;;
+            *) echo "::error::ai-skills URL is not a public GitHub URL: $url"; exit 1 ;;
+          esac
+          git init -q "$RUNNER_TEMP/probe"
+          git -C "$RUNNER_TEMP/probe" fetch -q --depth 1 "$url" "$sha"
+          echo "ai-skills gitlink is fetchable from the public remote"
+
+  ash-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      # Upload ASH's SARIF to Security -> Code scanning.
+      security-events: write
+    env:
+      # Run scanners sequentially to minimize memory usage.
+      ASH_MAX_WORKERS: "1"
+      # Pin tool versions for reproducibility. Bump these together with any
+      # change to .ash.yaml that depends on newer features.
+      ASH_VERSION: "v3.7.1"
+      # Commit the ASH_VERSION tag points to. Update both together.
+      ASH_COMMIT: "af1206aff596f1288ad066828058b3011de2a998"
+      GRYPE_VERSION: "v0.112.0"
+      # SHA-256 of the release archive (from the vendor's checksums.txt).
+      GRYPE_SHA256: "acb14a030010fe9bdb9594b4ae108d9d14ef2f926d936aa0916dc62c89c058ea"
+      CFN_NAG_VERSION: "0.8.10"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      # Node/npm are required by the npm-audit scanner.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Install scanners
+        run: |
+          sudo gem install cfn-nag --version "${CFN_NAG_VERSION}" --no-document
+          # Grype: download the binary directly (no install script), verify, extract.
+          curl -sSfL --retry 3 --retry-delay 5 -o "$RUNNER_TEMP/grype.tar.gz" \
+            "https://github.com/anchore/grype/releases/download/${GRYPE_VERSION}/grype_${GRYPE_VERSION#v}_linux_amd64.tar.gz"
+          echo "${GRYPE_SHA256}  $RUNNER_TEMP/grype.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/grype.tar.gz" -C "$RUNNER_TEMP/bin" grype
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          pip install --no-cache-dir "git+https://github.com/awslabs/automated-security-helper.git@${ASH_COMMIT}"
+      - name: Tool versions
+        run: |
+          ash --version || true
+          grype --version || true
+          cfn_nag --version || true
+      # Honors fail_on_findings: true and severity_threshold: MEDIUM from
+      # .ash.yaml. The job fails if any MEDIUM-or-higher finding is reported.
+      - name: Run ASH
+        run: ash --mode local --source-dir . --output-dir .ash/ash_output
+      - name: ASH summary
+        if: always()
+        run: |
+          ash report || true
+          md=.ash/ash_output/reports/ash.summary.md
+          if [ -f "$md" ]; then cat "$md" >> "$GITHUB_STEP_SUMMARY"; fi
+      # Fork pull requests get a read-only token and cannot upload SARIF.
+      - name: Upload SARIF to code scanning
+        if: >-
+          always() && hashFiles('.ash/ash_output/reports/ash.sarif') != '' &&
+          (github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: .ash/ash_output/reports/ash.sarif
+          category: ash
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: ash-output
+          path: .ash/ash_output
+          if-no-files-found: ignore
+          retention-days: 7
+
+  sbom:
+    # CycloneDX SBOMs for the frozen Python set and the installer's npm
+    # dependencies. Attach the artifact from a release tag's run to the release.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Install uv
+        run: pip install --no-cache-dir uv==0.13.4
+      - name: Generate SBOMs
+        run: ./install_script/make-sbom.sh sbom
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom
+          path: sbom/
+          retention-days: 90
+
+  dependency-review:
+    # Fails a pull request that adds a dependency with a known vulnerability
+    # at or above the threshold. Needs the dependency graph enabled.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
