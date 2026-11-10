@@ -123,6 +123,14 @@ jobs:
           pip install --no-cache-dir numpy==2.5.4 boto3==1.43.111 munkres==1.1.4
           pydantic==2.13.5 pytest==9.1.1 pyyaml==6.0.3 mcp==2.1.1 plotly==7.1.0
           pandas==3.0.6 pathspec==1.1.1 chardet==7.6.0
+      # The live installer<->checker tests in test_verify_integrity.py run
+      # install_script/index.js, so they need Node and the installer's packages.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Install installer dependencies
+        working-directory: install_script
+        run: npm ci --ignore-scripts
       # -v on purpose: a skipped line here is silent, and the modules that skip
       # themselves when a binary is missing cover the expensive failures. A skip
       # is a CI defect, not a pass.
@@ -163,8 +171,10 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-      # Upload ASH's SARIF to Security -> Code scanning.
+      # Upload ASH's SARIF to Security -> Code scanning; upload-sarif also
+      # reads the workflow run.
       security-events: write
+      actions: read
     env:
       # Run scanners sequentially to minimize memory usage.
       ASH_MAX_WORKERS: "1"

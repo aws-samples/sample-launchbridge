@@ -411,9 +411,18 @@ def test_an_older_seal_is_reported_as_older(repo):
 @git_required
 def test_git_refusing_the_repository_is_reported_with_its_message(repo, monkeypatch):
     _git(repo, "init", "-q")
-    # git_env() drops GIT_* variables; let this test's one through.
+    # git_env() drops GIT_* variables; let this test's ones through. The host's
+    # global and system config are shut out because a `safe.directory = *` there
+    # (CI runners set one) would stop git from refusing the repository at all.
     monkeypatch.setattr(
-        guard, "git_env", lambda: dict(os.environ, GIT_TEST_ASSUME_DIFFERENT_OWNER="1")
+        guard,
+        "git_env",
+        lambda: dict(
+            os.environ,
+            GIT_TEST_ASSUME_DIFFERENT_OWNER="1",
+            GIT_CONFIG_GLOBAL=os.devnull,
+            GIT_CONFIG_NOSYSTEM="1",
+        ),
     )
     found = [p for p in guard.problems(repo) if "git could not read" in p]
     assert found and "safe.directory" in found[0]
