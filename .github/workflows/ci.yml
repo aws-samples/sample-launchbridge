@@ -114,15 +114,19 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      # pyyaml is a test dependency: test_indexing_scope_ceiling.py writes real
-      # inq_config.yaml files, because the spend ceiling is read by parsing that
-      # YAML and a fake parser would not catch a value the real loader reads
-      # differently.
+      # Versions come from the shipped lock (constraints.txt is generated from
+      # it by install_script/freeze_deps.py), so tests run against what users
+      # install. plotly is the one package outside the lock: operational-metrics
+      # installs it on its own at this version
+      # (skills/operational-metrics/references/dashboard-generation.md); keep
+      # the two in step. pyyaml is a test dependency: test_indexing_scope_ceiling.py
+      # writes real inq_config.yaml files, because a fake parser would not catch
+      # a value the real loader reads differently.
       - name: Install test dependencies
         run: >-
-          pip install --no-cache-dir numpy==2.5.4 boto3==1.43.111 munkres==1.1.4
-          pydantic==2.13.5 pytest==9.1.1 pyyaml==6.0.3 mcp==2.1.1 plotly==7.1.0
-          pandas==3.0.6 pathspec==1.1.1 chardet==7.6.0
+          pip install --no-cache-dir -c project_dependencies/constraints.txt
+          numpy boto3 munkres pydantic pytest pyyaml mcp pandas pathspec chardet
+          plotly==7.1.0
       # The live installer<->checker tests in test_verify_integrity.py run
       # install_script/index.js, so they need Node and the installer's packages.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -132,10 +136,14 @@ jobs:
         working-directory: install_script
         run: npm ci --ignore-scripts
       # -v on purpose: a skipped line here is silent, and the modules that skip
-      # themselves when a binary is missing cover the expensive failures. A skip
-      # is a CI defect, not a pass.
+      # themselves when a binary is missing cover the expensive failures.
       - name: Run pytest
         run: pytest tests/unit/ -v --tb=short --junitxml=report.xml
+      # A test skipped because git, bash, node, the ai-skills submodule or a
+      # Python package is missing is a CI defect, not a pass. Platform skips
+      # (case-sensitive file system, ...) are allowed.
+      - name: Fail on skips for a missing CI requirement
+        run: python -I tests/check_required_skips.py report.xml
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
