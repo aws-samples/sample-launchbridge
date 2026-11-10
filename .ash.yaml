@@ -125,6 +125,15 @@ global_settings:
     - rule_id: "B404"
       path: "tests/**"
       reason: "Unit tests import subprocess to drive the scripts under test (git, node, the scripts themselves) with list-form argv (no shell); test code is never packaged or deployed"
+    - rule_id: "B314"
+      path: "tests/check_required_skips.py"
+      reason: >-
+        Parses only the JUnit report.xml that pytest writes earlier in the same
+        CI job, never external input. Python 3.12's bundled expat also refuses
+        external entities and limits entity expansion.
+    - rule_id: "B405"
+      path: "tests/check_required_skips.py"
+      reason: "Import of xml.etree for the trusted pytest report; see B314 above"
     - rule_id: "SECRET-AWS-ACCESS-KEY"
       path: "tests/**"
       reason: "Fixtures use the example access key from the AWS documentation — not a real credential"
