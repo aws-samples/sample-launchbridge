@@ -230,6 +230,15 @@ jobs:
           echo "::error::ASH reported findings at or above MEDIUM. Details:
           ${{ github.server_url }}/${{ github.repository }}/security/code-scanning
           (or run ASH locally)."
+      # ASH keeps findings suppressed in .ash.yaml in its SARIF, marked
+      # {"state": "accepted"} rather than SARIF's kind/status, so GitHub would
+      # open an alert for each one. Drop them; .ash.yaml records why each is
+      # suppressed.
+      - name: Remove suppressed findings from SARIF
+        if: always() && hashFiles('.ash/ash_output/reports/ash.sarif') != ''
+        run: >-
+          jq '.runs |= map(.results |= map(select((.suppressions // []) | length == 0)))'
+          .ash/ash_output/reports/ash.sarif > "$RUNNER_TEMP/ash.sarif"
       # Fork pull requests get a read-only token and cannot upload SARIF.
       - name: Upload SARIF to code scanning
         if: >-
@@ -238,7 +247,7 @@ jobs:
           github.event.pull_request.head.repo.full_name == github.repository)
         uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
-          sarif_file: .ash/ash_output/reports/ash.sarif
+          sarif_file: ${{ runner.temp }}/ash.sarif
           category: ash
 
   sbom:
