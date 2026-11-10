@@ -51,9 +51,12 @@ of key: a native skill's own name, and an external (ai-skills) GROUP key
 (`ai-domain-<domain>`) whose hash covers every selected skill in that domain.
 Treating a group key as a directory name reports the whole domain as missing.
 Group keys are therefore skipped here and the external skills behind them are
-verified from `externalSkillHashes`, which records one `shared/<skill>` digest
-per installed folder. Every agent installs the same folder, so each digest is
-checked in every agent's skills directory.
+verified from `externalSkillHashes`, which records one `<agent>/<skill>` digest
+per installed folder: Claude Code receives each folder unchanged and every other
+agent receives it with an adapted SKILL.md, so the digests differ by agent and
+each is checked in that agent's skills directory. Older installs recorded one
+`shared/<skill>` digest for every agent; those are checked in every agent's
+skills directory.
 """
 
 from __future__ import annotations
@@ -110,9 +113,6 @@ BASELINE_FIELDS = (
 # `skillHashes` keys starting with this prefix.
 # `tests/unit/test_verify_integrity.py` asserts this matches the JS.
 EXTERNAL_GROUP_PREFIX = "ai-domain-"
-
-# Prefix of the per-folder external digests in `externalSkillHashes`.
-SHARED_PREFIX = "shared/"
 
 # A skill directory name as the installer writes it.
 SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
@@ -411,12 +411,18 @@ def verify(target_repo: Path) -> dict:
             key for key in skill_hashes if str(key).startswith(EXTERNAL_GROUP_PREFIX)
         }
     external_hashes = manifest.get("externalSkillHashes") or {}
-    # One digest per external skill folder, the same for every agent.
-    shared_hashes = {
-        str(key)[len(SHARED_PREFIX) :]: value
-        for key, value in external_hashes.items()
-        if str(key).startswith(SHARED_PREFIX) and len(str(key)) > len(SHARED_PREFIX)
-    }
+    # `<agent>/<skill>`: what that agent received. `shared/<skill>`: one digest
+    # for every agent, as older installs recorded it.
+    shared_hashes: dict[str, str] = {}
+    agent_hashes: dict[str, dict[str, str]] = {}
+    for key, value in external_hashes.items():
+        prefix, separator, skill_name = str(key).partition("/")
+        if not separator or not skill_name:
+            continue
+        if prefix == "shared":
+            shared_hashes[skill_name] = value
+        elif prefix in AGENT_SKILLS_DIRS:
+            agent_hashes.setdefault(prefix, {})[skill_name] = value
 
     matched: list[str] = []
     modified: list[dict] = []
@@ -489,12 +495,13 @@ def verify(target_repo: Path) -> dict:
                 continue
             check(skills_dir, skills_dir_rel, skill_name, expected)
 
-        for skill_name, expected in sorted(shared_hashes.items()):
+        own_hashes = {**shared_hashes, **agent_hashes.get(agent, {})}
+        for skill_name, expected in sorted(own_hashes.items()):
             check(skills_dir, skills_dir_rel, skill_name, expected)
 
         # External domains recorded as installed with no per-folder digest behind
         # them. The group hash cannot stand in, so these went unchecked.
-        if external_keys and not shared_hashes:
+        if external_keys and not own_hashes:
             unverifiable.append(
                 {
                     "skills_dir": skills_dir_rel,

@@ -35,6 +35,8 @@ import * as ai from './aiSkills.js';
  * @property {boolean} isAiSkill - Marker the install loop uses for source resolution
  * @property {string} group - External group id (`ai-domain-<domain>`)
  * @property {string} path - Source path, installed for every agent
+ * @property {Map<string, Map<string, Buffer>>} variants - Every other agent's
+ *   files (SKILL.md, Codex's agents/openai.yaml), by copy id
  */
 
 /**
@@ -78,13 +80,30 @@ export const externalSkills = {
 
     /**
      * Resolves the source directory for an external skill. Every agent
-     * installs the same folder.
+     * installs the same folder; `adaptForAgent` then gives each agent its
+     * SKILL.md.
      *
      * @param {ExternalSkill} skill
      * @returns {string}
      */
     resolveSource(skill) {
         return skill.path;
+    },
+
+    /**
+     * Gives an installed external skill the files its agent reads: the source
+     * ones for Claude Code, its own SKILL.md (and Codex's agents/openai.yaml)
+     * for every other agent. Called after each copy or symlink install of an
+     * external skill.
+     *
+     * @param {ExternalSkill} skill
+     * @param {string} agent - Agent name
+     * @param {string} targetDir - The installed skill directory
+     * @param {string[]} agents - Every selected agent
+     * @returns {Promise<void>}
+     */
+    adaptForAgent(skill, agent, targetDir, agents) {
+        return ai.writeAgentFiles(skill, agent, targetDir, agents);
     },
 
     /**
@@ -127,17 +146,24 @@ export const externalSkills = {
     },
 
     /**
-     * Computes per-folder content hashes for the selected external skills,
-     * keyed `shared/<skillName>`. Group hashes drive upgrades; these are the
-     * digests an integrity check can verify against an installed directory.
+     * Computes the content hash of every selected external skill as each
+     * agent receives it, keyed `<agent>/<skillName>`. Group hashes drive
+     * upgrades; these are the digests an integrity check can verify against
+     * an installed directory.
      *
      * @param {string[]} selectedSkills
      * @param {ExternalSkill[]} skills
+     * @param {string[]} agents - Agent names the skills are installed for
      * @param {{ allowedRoot?: string }} [options] - Passed to the content hash
      * @returns {Promise<Record<string, string>>}
      */
-    computeFolderHashes(selectedSkills, skills, options) {
-        return ai.computeAiSkillFolderHashes(selectedSkills, skills, options);
+    computeFolderHashes(selectedSkills, skills, agents, options) {
+        return ai.computeAiSkillFolderHashes(
+            selectedSkills,
+            skills,
+            agents,
+            options
+        );
     },
 
     /**
@@ -158,10 +184,10 @@ export const externalSkills = {
     },
 
     /**
-     * Post-pull update hook for external skills. Re-copies external skills
-     * whose group content changed (copy installs) and returns refreshed group
-     * hashes to merge back into the manifest. Self-contained so the native
-     * updater stays unaware of external skills.
+     * Post-pull update hook for external skills. Reinstalls external skills
+     * whose group content changed and returns refreshed group hashes and
+     * per-agent digests to merge back into the manifest. Self-contained so the
+     * native updater stays unaware of external skills.
      *
      * @param {string} sourcePath
      * @param {string} targetRepo

@@ -65,7 +65,7 @@ Skills:
   feature-recommendations → production readiness & feature roadmap
 ```
 
-> **Optional AI skills add-on:** Beyond the native skills above, the installer can also add skills from the open-source **ai-skills** library: the **AI Spec-Driven Development** bundle (`/ai-create → /ai-research → /ai-plan → /ai-implement → /ai-archive` + the `ai-workflow` orchestrator). They are agent-agnostic, need no `lb-setup`/AWS/`.venv_lb`, and are covered in [AI Skills (optional add-on)](#ai-skills-optional-add-on) below.
+> **Optional AI skills add-on:** Beyond the native skills above, the installer can also add skills from the open-source **ai-skills** library: one bundle per domain, such as **AI Spec-Driven Development** (`/ai-create → /ai-research → /ai-plan → /ai-implement → /ai-archive` + the `ai-workflow` orchestrator), **AI Architecture Decisions**, **AI Agent Context**, **AI Development Process**, **AI Prose Documents** and **AI Software Documentation**. They are agent-agnostic, need no `lb-setup`/AWS/`.venv_lb`, and are covered in [AI Skills (optional add-on)](#ai-skills-optional-add-on) below.
 
 ---
 
@@ -662,25 +662,41 @@ Security, authentication/authorization, configuration management, error handling
 
 ## AI Skills (optional add-on)
 
-Beyond the native LaunchBridge skills, the installer can add skills from the open-source **ai-skills** library ([aws-samples/sample-ai-skills](https://github.com/aws-samples/sample-ai-skills), MIT-0). LaunchBridge vendors it as the git submodule `project_dependencies/ai-skills`, pinned at v0.3.4. The upstream [documentation](https://github.com/aws-samples/sample-ai-skills/tree/v0.3.4/docs) has one page per skill ([skills reference](https://github.com/aws-samples/sample-ai-skills/tree/v0.3.4/docs/skills)); this section covers how LaunchBridge installs them and how they fit with the native skills.
+Beyond the native LaunchBridge skills, the installer can add skills from the open-source **ai-skills** library ([aws-samples/sample-ai-skills](https://github.com/aws-samples/sample-ai-skills), MIT-0). LaunchBridge includes it as the git submodule `project_dependencies/ai-skills`, pinned at v0.6.2. The upstream [documentation](https://github.com/aws-samples/sample-ai-skills/tree/v0.6.2/docs) has one page per skill ([skills reference](https://github.com/aws-samples/sample-ai-skills/tree/v0.6.2/docs/skills)); this section covers how LaunchBridge installs them and how they fit with the native skills.
 
-**Key differences from native skills:** AI skills require **no `lb-setup`, no AWS credentials, and no `.venv_lb`**. They write their artifacts to the project, not to `.lb_workspace/`.
+**Key differences from native skills:** AI skills require **no `lb-setup`, no AWS credentials, and no `.venv_lb`**. They write their artifacts to the project, not to `.lb_workspace/`. `ai-human-docx`, `ai-human-pdf` and `ai-human-xlsx` run bundled Python scripts with [`uv`](https://docs.astral.sh/uv/), which must already be on the machine; the skills never install `uv`, `node` or a package themselves. On first use, `uv` downloads into its cache a Python 3.14 interpreter when none is installed, and the script's pinned packages: none for `ai-human-docx`, XlsxWriter 3.2.9 for `ai-human-xlsx`, and ReportLab, Mistune and PyYAML with their dependencies, at the versions and hashes locked beside the script, for `ai-human-pdf`. When `node` is installed, the first PDF export with a Mermaid diagram also fetches a pinned Mermaid renderer and a headless browser through `npx`, which can take several minutes; without `node`, diagrams are drawn as code blocks.
 
 ### 1. Why they are offered
 
 The ai-skills give the agent your project's patterns, constraints and conventions, so its output is consistent from one run to the next.
 
 - **Spec-driven development (SDD).** Feature work grounded in the project's own context: research before planning, a plan before code, artifacts in dated folders under `docs/working/`, and a human review between steps.
+- **Decisions and agent context.** An architecture decision log that the plans respect, and the files a coding agent reads (`AGENTS.md`, `CLAUDE.md`, new skills).
+- **Development process and documents.** How the repository is developed, issues, merge requests, prose documents for people, and the project's documentation tree.
 
 ### 2. What gets installed
 
-The skills are grouped by domain upstream, and each domain LaunchBridge offers is one installer bundle. The library's `semantic-release` domain (`ai-release`) is not offered; it is available directly from [aws-samples/sample-ai-skills](https://github.com/aws-samples/sample-ai-skills). Domains are independent, and a skill works without the others in its bundle.
+The skills are grouped by domain upstream, and each domain LaunchBridge offers is one installer bundle. The library's `release` domain (`ai-scaffold-release`) is not offered; it is available directly from [aws-samples/sample-ai-skills](https://github.com/aws-samples/sample-ai-skills). Domains are independent, and a skill works without the others in its bundle.
 
 | Bundle (`--skills` value) | Installs |
 | ------------------------- | -------- |
 | **AI Spec-Driven Development** (`"AI Spec-Driven Development"`) | `ai-create`, `ai-research`, `ai-plan`, `ai-implement`, `ai-archive`, **and** the native `ai-workflow` orchestrator |
+| **AI Architecture Decisions** (`"AI Architecture Decisions"`) | `ai-adr` |
+| **AI Agent Context** (`"AI Agent Context"`) | `ai-agent-context`, `ai-make-skill`, `ai-scaffold-agents-md` |
+| **AI Development Process** (`"AI Development Process"`) | `ai-dev-autopr`, `ai-dev-issue`, `ai-scaffold-dev-context`, `ai-scaffold-dev-templates` |
+| **AI Prose Documents** (`"AI Prose Documents"`) | `ai-human-docx`, `ai-human-draft`, `ai-human-outline`, `ai-human-pdf`, `ai-human-xlsx` |
+| **AI Software Documentation** (`"AI Software Documentation"`) | `ai-doc`, `ai-scaffold-docusaurus-site` |
 
-Individual skill names (e.g. `--skills ai-plan`) also work; `ai-workflow` is only added with the full AI Spec-Driven Development bundle or by name. Every selected agent gets the same files: each skill is installed as an Agent Skills directory in each selected agent's skills folder (`.claude/skills/`, `.kiro/skills/`, …), with its own `references/` folder.
+Individual skill names (e.g. `--skills ai-plan`) also work; `ai-workflow` is only added with the full AI Spec-Driven Development bundle or by name. Each skill is installed as an Agent Skills directory in each selected agent's skills folder (`.claude/skills/`, `.kiro/skills/`, …). Claude Code gets the skill as published. Agents differ in which frontmatter fields they read and enforce, such as a skill's tool restrictions and whether it runs only when invoked by name, so every other agent gets the same files with its own `SKILL.md`, built at install time the way the ai-skills installer builds it for Kiro, Codex and pi:
+
+| Agent | Its `SKILL.md` |
+| ----- | -------------- |
+| Kiro | Keeps only the frontmatter fields Kiro reads and states the skill's tool declarations in a `## Tool restrictions` section. An explicit-only skill also gets an `## Invocation` section: run it only when invoked by name |
+| Codex | Kiro's form without the `## Invocation` section, with commands written `$ai-…`. An explicit-only skill also gets `agents/openai.yaml`, which turns off implicit invocation |
+| pi | Also keeps `allowed-tools` and `disable-model-invocation` in its frontmatter, states the tool declarations in `## Tool restrictions`, and writes commands as `/skill:ai-…` |
+| Cline, Roo Code, other agents | Kiro's form, naming the agent |
+
+pi and other agents share `.agents/skills/`, which holds pi's copy when pi is selected.
 
 | Skill | What it does |
 | ----- | ------------ |
@@ -689,14 +705,29 @@ Individual skill names (e.g. `--skills ai-plan`) also work; `ai-workflow` is onl
 | `ai-plan` | Writes an implementation plan with phases, code samples and testing strategy (`plan.md`), ending with a human review block |
 | `ai-implement` | Executes the plan, building the code it specifies |
 | `ai-archive` | Retires a finished folder into `docs/working/.archive/` |
+| `ai-adr` | Keeps the architecture decision log: stands it up, then writes records and moves them through propose, accept and decline |
+| `ai-agent-context` | Writes agent context documentation (`CLAUDE.md` + `README.md`) for a source directory |
+| `ai-make-skill` | Writes a new agent skill, from a description or from work already done in the conversation |
+| `ai-scaffold-agents-md` | Makes `AGENTS.md` the single source of agent context, with a `CLAUDE.md` beside each that imports it |
+| `ai-scaffold-dev-context` | Records how the repository is developed (forge, base branch, verification commands, …) as one block in the root `AGENTS.md` or `CLAUDE.md` |
+| `ai-scaffold-dev-templates` | Writes the repository's issue, merge request and review templates in its forge's format |
+| `ai-dev-issue` | Files a clear, complete issue in the project's tracker, or a dated markdown file when there is none |
+| `ai-dev-autopr` | Drives a spec, issue or ticket end to end into a merge-ready pull or merge request, including the push |
+| `ai-human-outline` | Turns a document folder into `outline.md`: a heading hierarchy with drafting guidance under every heading |
+| `ai-human-draft` | Turns a document folder into `draft.md`, following `outline.md` and `research.md` when present |
+| `ai-human-docx` | Exports one markdown file to Microsoft Word (`.docx`) |
+| `ai-human-pdf` | Exports one markdown file to a PDF with a cover page and table of contents |
+| `ai-human-xlsx` | Exports a markdown file or a working folder to one Microsoft Excel workbook (`.xlsx`) |
+| `ai-doc` | Files documentation into the project's docs tree by Diátaxis mode |
+| `ai-scaffold-docusaurus-site` | Scaffolds a Docusaurus 3 documentation site after a short interview |
 
-The working root is `docs/working/` unless `.context/README.md` sets a string `output_path`. The SDD skills keep a working manifest at `<working root>/README.md`.
+The working root is `docs/working/` unless an optional root `.ai-skills.toml` sets a string `output_path`. The SDD skills keep a working manifest at `<working root>/README.md`.
 
 ### 3. `ai-workflow`, the recommended entry point
 
 `ai-workflow` is a native LaunchBridge skill, installed with the AI Spec-Driven Development bundle. It does not re-implement or edit the SDD skills, and it cannot start them: they are slash-only and deny the `Skill` tool. Instead it:
 
-1. **Prepares inputs.** Optionally ingests an engagement readout (PDF or Word), offers to write `.context/README.md` (objectives, constraints, key terms, references), and vendors reference artifacts into `.lb_workspace/ai_workflow/references/`.
+1. **Prepares inputs.** Optionally ingests an engagement readout (PDF or Word), offers to write `.context/README.md` (objectives, constraints, key terms, references) and to list it in `context_files` of `.ai-skills.toml`, showing you both changes first, and vendors reference artifacts into `.lb_workspace/ai_workflow/references/`.
 2. **Recommends a named chain** for your scenario:
 
    | Chain | Sequence |
@@ -720,19 +751,22 @@ Its state (readout, `references/`, `workflow_state.md`) lives in `.lb_workspace/
 
 ### 4. How they work with LaunchBridge
 
-- **Context.** The SDD skills read `.context/README.md` (written by `ai-workflow` on request) and fall back to the target's `README.md`, `AGENTS.md` and `CLAUDE.md`, so LaunchBridge guidance and the project's test command reach them. Missing context produces a warning, never a stop.
+- **Context.** The SDD skills read the target's root `README.md`, `AGENTS.md` and `CLAUDE.md`, plus every file listed in `context_files` of an optional root `.ai-skills.toml` (such as the `.context/README.md` that `ai-workflow` writes on request), so LaunchBridge guidance and the project's conventions reach them. Bullets under a `Constraints` heading in any of those files bind `ai-plan` and `ai-implement`; constraints that cannot both hold stop the run until you pick one. Missing context produces a warning, never a stop.
+- **Test command.** `ai-implement` runs the `verify` commands that `/ai-scaffold-dev-context` records, then a test command named in `CLAUDE.md`, then the package manifest's.
 - **`indexing-and-qa`.** If it is installed and indexed, `ai-workflow` can use it to draft `.context/README.md` from the codebase. The SDD skills cannot call other skills, so they don't query the index themselves.
-- **ADR log and graphify.** The SDD skills use an architectural decision record log (`.adr-dir` or `doc/adr`) and a graphify graph (`graphify-out/graph.json`) when present. Both are optional.
+- **ADR log and graphify.** The SDD skills use an architectural decision record log (`.adr-dir` or `doc/adr`, which `/ai-adr` maintains) and a graphify graph (`graphify-out/graph.json`) when present. Both are optional.
 
 ### 5. Invocation notes
 
-The SDD skills are slash-only by design. In agents without skill slash commands they may decline intent-based activation; use Claude Code (or another agent with skill slash commands) for the SDD workflow. `ai-workflow` activates by intent in any agent.
+The AI skills are slash-only by design. In agents without skill slash commands they may decline intent-based activation; use Claude Code (or another agent with skill slash commands) for the SDD workflow. `ai-workflow` activates by intent in any agent. The installed `SKILL.md` writes commands the way the agent invokes skills: `$ai-plan` in Codex, `/skill:ai-plan` in pi, `/ai-plan` elsewhere.
 
-Each skill declares denied and pre-approved tools in its frontmatter. How strictly those declarations are enforced depends on the agent; see the upstream [tool grants](https://github.com/aws-samples/sample-ai-skills/blob/v0.3.4/docs/skills/research/tool-grants.md) page.
+Each skill declares denied and pre-approved tools in its frontmatter. Claude Code enforces those declarations; for every other agent the installed `SKILL.md` states them as instructions the agent must follow. See the upstream [tool grant bounds](https://github.com/aws-samples/sample-ai-skills/blob/v0.6.2/docs/explanation/tool-grant-bounds.md) page.
 
 ### 6. Tracking and updates
 
-Each installed domain is tracked as one group: an `ai-domain-research` row in `setup_status.md` (status `ready`; no setup needed) and matching group hashes in the version manifest. `ai-workflow` has its own native row. `launchbridge update` re-copies changed AI skills the same way it does native ones.
+Each installed domain is tracked as one group: an `ai-domain-<domain>` row in `setup_status.md` (status `ready`; no setup needed) and a matching group hash in the version manifest, plus one digest per agent and skill for the integrity check. `ai-workflow` has its own native row. `launchbridge update` reinstalls the installed AI skills of every domain whose content changed, by copy or by symlink as before; a bundle you did not install before needs a re-run of `launchbridge`.
+
+**Projects with a `.context/README.md`.** The AI skills read `.context/README.md` only when `context_files` in `.ai-skills.toml` lists it, and take `output_path` only from `.ai-skills.toml`, not from that file's frontmatter. `ai-workflow` offers to move both into `.ai-skills.toml`.
 
 ---
 

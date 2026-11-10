@@ -551,13 +551,15 @@ async function main() {
     // The manifest stores external skills as group keys (ai-domain-<domain>),
     // but the prompt pre-checks categories by member skill name. Expand group
     // keys to the external skills the last install actually recorded (their
-    // `shared/<name>` folder digests), so a partial install does not pre-check
-    // the whole bundle.
-    const priorExternalNames = Object.keys(
-        existingManifestForPrompts?.externalSkillHashes ?? {}
-    )
-        .filter((key) => key.startsWith('shared/'))
-        .map((key) => key.slice('shared/'.length));
+    // `<agent>/<name>` digests, `shared/<name>` in older manifests), so a
+    // partial install does not pre-check the whole bundle.
+    const priorExternalNames = [
+        ...new Set(
+            Object.keys(existingManifestForPrompts?.externalSkillHashes ?? {})
+                .filter((key) => key.includes('/'))
+                .map((key) => key.slice(key.indexOf('/') + 1))
+        ),
+    ];
     const selectedSkills = resolvedFlags.skills
         ? resolvedFlags.skills
         : await promptForSkillCategories(
@@ -699,11 +701,12 @@ async function main() {
         // Recorded separately because a group hash cannot be verified against an
         // installed directory: it spans every selected skill in a domain, so no
         // single installed folder reproduces it. verify_integrity.py needs one
-        // digest per installed folder (`shared/<skill>`, the same for every
-        // agent), and skips the group keys below.
+        // digest per installed folder, `<agent>/<skill>`, because the agents
+        // receive different SKILL.md files; it skips the group keys below.
         currentExternalFolderHashes = await externalSkills.computeFolderHashes(
             selectedSkills,
             externalSkillList,
+            agents,
             { allowedRoot: hashAllowedRoot }
         );
         // Which skillHashes keys belong to the external provider (the
@@ -1160,7 +1163,8 @@ async function main() {
             }
 
             // Resolve the source path. External skills (e.g. AI skills) are
-            // resolved by their provider (the same folder for every agent);
+            // resolved by their provider (the same folder for every agent,
+            // whose own files adaptForAgent writes after the install);
             // native skills use their single discovered path.
             const skillSourcePath = externalSkills.ownsSkill(
                 skillName,
@@ -1267,6 +1271,14 @@ async function main() {
                                 `Skipped link outside the LaunchBridge source: ${src} -> ${resolved}`
                             ),
                     });
+                }
+                if (externalSkills.ownsSkill(skillName, externalSkillList)) {
+                    await externalSkills.adaptForAgent(
+                        skill,
+                        agent,
+                        skillTargetPath,
+                        agents
+                    );
                 }
 
                 results.push({

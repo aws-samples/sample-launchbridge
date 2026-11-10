@@ -62,6 +62,8 @@ export function verifyInstallation(result, method) {
 /**
  * Verifies that a symlink installation is valid.
  * With the new approach, we create real directories with symlinked files inside.
+ * SKILL.md is a symlink, or a regular file where the installer writes one for
+ * the agent (an AI skill's adapted SKILL.md for every agent but Claude Code).
  * @param {string} skillPath - Path to the skill directory
  * @returns {boolean}
  */
@@ -73,14 +75,14 @@ export function verifySymlink(skillPath) {
             return false;
         }
 
-        // 2. Verify that SKILL.md exists and is a symlink
+        // 2. Verify that SKILL.md exists and is a symlink or a regular file
         const skillMdPath = `${skillPath}/SKILL.md`;
         if (!fs.existsSync(skillMdPath)) {
             return false;
         }
 
         const skillMdStats = fs.lstatSync(skillMdPath);
-        if (!skillMdStats.isSymbolicLink()) {
+        if (!skillMdStats.isSymbolicLink() && !skillMdStats.isFile()) {
             return false;
         }
 

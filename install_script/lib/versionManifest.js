@@ -38,9 +38,10 @@ import { writeRepoState } from './stateDir.js';
  *   LaunchBridge installed (e.g. `.claude/skills/testing-framework`). Only these
  *   are replaced or removed; a same-named directory it skipped is not listed.
  * @property {Record<string, string>} [externalSkillHashes] - Map of
- *   `shared/<skillName>` (e.g. `shared/ai-plan`) → Content_Hash of that one
- *   source folder, which every agent installs. What verify_integrity.py checks
- *   for external skills, since a group hash matches no installed directory.
+ *   `<agent>/<skillName>` (e.g. `kiro/ai-plan`) → Content_Hash of the skill
+ *   folder as that agent received it (older installs: `shared/<skillName>`, one
+ *   digest for every agent). What verify_integrity.py checks for external
+ *   skills, since a group hash matches no installed directory.
  * @property {string[]} [externalManifestKeys] - The skillHashes keys owned by the
  *   external provider (the `ai-domain-*` group keys). The integrity checker
  *   skips these rather than verifying them as skill folders.
