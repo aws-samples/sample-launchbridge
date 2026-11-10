@@ -88,10 +88,8 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
       - name: Install installer dependencies
-        working-directory: install_script
         run: npm ci --ignore-scripts
       - name: Run vitest
-        working-directory: install_script
         run: npm test
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
@@ -133,7 +131,6 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
       - name: Install installer dependencies
-        working-directory: install_script
         run: npm ci --ignore-scripts
       # -v on purpose: a skipped line here is silent, and the modules that skip
       # themselves when a binary is missing cover the expensive failures.

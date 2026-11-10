@@ -63,15 +63,26 @@ Optional features need more, only when you turn them on. Scope each to its resou
 
 For example, the S3 part of transcription can be limited to `arn:aws:s3:::<bucket>` for `s3:GetBucketLocation` and `arn:aws:s3:::<bucket>/iris-transcribe-temp/*` for the object actions.
 
-#### One-time Setup for Development
+#### Option A: run the installer with npx (no clone)
 
-Run the setup script once, which will initialize submodules and link the `launchbridge` command globally:
+From your target repository, run a release directly from GitHub. Pin the release tag; npm fetches the repository and its submodules at that tag:
 
 ```bash
-npm run setup
+cd /path/to/your-target-repo
+npx --yes github:aws-samples/sample-launchbridge#v1.1.0
 ```
 
-#### Adding LaunchBridge Skills to target codebase
+This installs with the `copy` method (a symlink install needs a persistent clone, see Option B) and does not verify the tag's signature; npm resolves the tag to a commit but checks nothing else. To move to a newer release, run the same command with the new tag; `launchbridge update` is not available for npx installs. Use Option B if you want signed-release verification, symlink installs or `launchbridge update`.
+
+#### Option B: clone and link (development and signed releases)
+
+Clone the repository, then run the setup script once. It initializes the submodules, installs the CLI dependencies from the lockfile, and links the `launchbridge` command globally:
+
+```bash
+git clone https://github.com/aws-samples/sample-launchbridge.git
+cd sample-launchbridge
+npm run setup
+```
 
 Next, navigate to your target repository and run `launchbridge` to install the skills:
 
@@ -79,6 +90,8 @@ Next, navigate to your target repository and run `launchbridge` to install the s
 cd /path/to/your-target-repo
 launchbridge
 ```
+
+#### What the installer does
 
 The installer will:
 
@@ -130,7 +143,7 @@ echo 'launchbridge-release namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA
 git -c gpg.ssh.allowedSignersFile=~/.config/launchbridge/allowed_signers verify-tag v1.1.0
 ```
 
-A good signature prints `Good "git" signature for launchbridge-release`. Do not use a tag that fails verification. `launchbridge update` shows the incoming commits for review but does not itself verify tag signatures.
+A good signature prints `Good "git" signature for launchbridge-release`. Do not use a tag that fails verification. `launchbridge update` shows the incoming commits for review but does not itself verify tag signatures, and `npx github:…#<tag>` performs no verification at all; clone and verify the tag when that matters to you.
 
 ## AI Skills (optional add-on)
 
@@ -244,7 +257,7 @@ launchbridge/
 ├── LICENSE                         # MIT-0
 ├── version.txt                     # Release version and release notes
 ├── run_lint.sh                     # Lint and format checks
-├── package.json                    # CLI entry point and npm scripts
+├── package.json                    # CLI entry point, dependencies, npm scripts and the files npx ships
 ├── project_dependencies/           # Git submodules (metric-library = public sample-metric-library, ai-skills = public sample-ai-skills) + pyproject.toml
 │
 ├── docs/                           # User guide (not shipped to agents)

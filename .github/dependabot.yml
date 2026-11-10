@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 #
 # Weekly version-update PRs for the pinned GitHub Actions and the installer's
-# npm dependencies. Security alerts and security-update PRs are enabled
+# npm dependencies (root package.json). Security alerts and security-update PRs are enabled
 # separately in Settings -> Code security. The cooldown holds back a version
 # for 7 days after it is published, so a malicious or broken release is more
 # likely to be caught and yanked before a PR proposes it.
@@ -18,7 +18,7 @@ updates:
       actions:
         patterns: ["*"]
   - package-ecosystem: npm
-    directory: /install_script
+    directory: /
     schedule:
       interval: weekly
     cooldown:

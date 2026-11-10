@@ -4,7 +4,7 @@
 # make-sbom.sh
 # Writes CycloneDX SBOMs for the frozen Python dependency set
 # (project_dependencies/requirements.lock.txt) and the installer's npm
-# dependencies (install_script/package-lock.json, runtime only).
+# dependencies (package-lock.json at the repository root, runtime only).
 #
 # Usage: ./install_script/make-sbom.sh [output-dir]   (default: sbom/)
 #
@@ -22,7 +22,7 @@ uvx --from "cyclonedx-bom==7.5.0" cyclonedx-py requirements \
   --of JSON --output-reproducible -o "$OUT_DIR/python.cdx.json" \
   "$REPO_ROOT/project_dependencies/requirements.lock.txt"
 
-(cd "$REPO_ROOT/install_script" \
+(cd "$REPO_ROOT" \
   && npx --yes "@cyclonedx/cyclonedx-npm@6.0.1" --package-lock-only --omit dev \
     --output-reproducible --output-file "$OUT_DIR/npm.cdx.json")
 

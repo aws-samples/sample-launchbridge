@@ -35,9 +35,8 @@ redistributed here, each retaining its own license:
     pinned in project_dependencies/constraints.txt and
     project_dependencies/requirements.lock.txt. IRIS is installed from its git
     repository, pinned to a commit.
-  - JavaScript dependencies are declared in package.json and
-    install_script/package.json, and pinned in the package-lock.json beside
-    each.
+  - JavaScript dependencies are declared in package.json and pinned in
+    package-lock.json.
 
 Consult those manifests and each package's own distribution for its license
 text.

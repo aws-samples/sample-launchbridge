@@ -40,7 +40,8 @@ Run these from a clean clone of the commit you intend to release:
 
 ```bash
 npm run setup
-(cd install_script && npx vitest run)
+npm test
+npm pack --dry-run   # the file list is what `npx github:…` installs; check nothing is missing
 uv run --no-project --python 3.12 \
   --with numpy==2.5.4 --with boto3==1.43.112 --with munkres==1.1.4 \
   --with pydantic==2.13.5 --with pytest==9.1.1 --with pyyaml==6.0.3 \
@@ -74,8 +75,8 @@ Packages for another platform (the Windows-only ones in `constraints.txt`) are s
 Then set the release version, the same in every file:
 
 - `version.txt` (first token on the first line; the installer reads it)
-- `package.json` and `install_script/package.json`
-- `package-lock.json` and `install_script/package-lock.json` (run `npm install --package-lock-only` in each directory after changing its `package.json`)
+- `package.json`
+- `package-lock.json` (run `npm install --package-lock-only` after changing `package.json`)
 
 Commit the version change. The release tag points at this commit.
 
@@ -102,7 +103,7 @@ git push origin v<version>
 
 ## GitHub release and SBOMs
 
-Generate the CycloneDX SBOMs for the tagged commit (the frozen Python set and the installer's runtime npm dependencies):
+Generate the CycloneDX SBOMs for the tagged commit (the frozen Python set and the installer's runtime npm dependencies from `package-lock.json`):
 
 ```bash
 git checkout v<version>

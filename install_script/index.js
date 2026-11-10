@@ -86,6 +86,7 @@ import {
     getGitCommitHash,
     readReleaseVersion,
 } from './lib/deliveryDetector.js';
+import { restorePackedLinks } from './lib/packedLinks.js';
 import { determineLifecycle } from './lib/lifecycleOrchestrator.js';
 import { applyStatusResets } from './lib/statusReset.js';
 import {
@@ -484,6 +485,19 @@ async function main() {
         process.exit(1);
     }
 
+    // A packaged copy (e.g. `npx github:aws-samples/sample-launchbridge`) has no
+    // .git and lacks the symlinks npm pack drops; restore them so the tree
+    // matches a clone before anything is discovered, copied or hashed.
+    const sourceDelivery = await detectDeliveryMethod(sourcePath);
+    if (sourceDelivery === 'bundled') {
+        try {
+            await restorePackedLinks(sourcePath);
+        } catch (err) {
+            uiError(`Failed to prepare the packaged source: ${err.message}`);
+            process.exit(1);
+        }
+    }
+
     // Step 2: Discover available skills — native LaunchBridge skills plus any
     // external skills (e.g. the ai-skills submodule) via the provider seam.
     // Native names win a collision: an external skill with a native name is
@@ -545,9 +559,25 @@ async function main() {
     const agents = resolvedFlags.agents
         ? resolvedFlags.agents
         : await promptForAgents(manifestAgents);
-    const method = resolvedFlags.method
-        ? resolvedFlags.method
-        : await promptForMethod();
+    // Symlinks into a packaged copy would dangle as soon as npm prunes its
+    // cache, so a bundled source installs by copy only.
+    let method;
+    if (sourceDelivery === 'bundled') {
+        if (resolvedFlags.method === 'symlink') {
+            uiError(
+                'Symlink installs need a git clone of LaunchBridge. This run uses a packaged copy (e.g. npx); use --method copy, or clone the repository and run `npm run setup`.'
+            );
+            process.exit(1);
+        }
+        method = 'copy';
+        muted(
+            'Running from a packaged copy of LaunchBridge (not a git clone): installing with copy method.'
+        );
+    } else {
+        method = resolvedFlags.method
+            ? resolvedFlags.method
+            : await promptForMethod();
+    }
     // The manifest stores external skills as group keys (ai-domain-<domain>),
     // but the prompt pre-checks categories by member skill name. Expand group
     // keys to the external skills the last install actually recorded (their
