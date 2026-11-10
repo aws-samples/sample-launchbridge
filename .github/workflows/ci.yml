@@ -216,14 +216,20 @@ jobs:
           cfn_nag --version || true
       # Honors fail_on_findings: true and severity_threshold: MEDIUM from
       # .ash.yaml. The job fails if any MEDIUM-or-higher finding is reported.
+      #
+      # Logs, step summaries and artifacts of a public repository are readable
+      # by anyone, so this job publishes only ASH's per-scanner pass/fail table.
+      # Finding details go to code scanning (Security -> Code scanning, ASH
+      # category), which only people with write or security access can see.
+      # To read them locally: ash --mode local, then ash report.
       - name: Run ASH
         run: ash --mode local --source-dir . --output-dir .ash/ash_output
-      - name: ASH summary
-        if: always()
-        run: |
-          ash report || true
-          md=.ash/ash_output/reports/ash.summary.md
-          if [ -f "$md" ]; then cat "$md" >> "$GITHUB_STEP_SUMMARY"; fi
+      - name: Where to find the details
+        if: failure()
+        run: >-
+          echo "::error::ASH reported findings at or above MEDIUM. Details:
+          ${{ github.server_url }}/${{ github.repository }}/security/code-scanning
+          (or run ASH locally)."
       # Fork pull requests get a read-only token and cannot upload SARIF.
       - name: Upload SARIF to code scanning
         if: >-
@@ -234,13 +240,6 @@ jobs:
         with:
           sarif_file: .ash/ash_output/reports/ash.sarif
           category: ash
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: ash-output
-          path: .ash/ash_output
-          if-no-files-found: ignore
-          retention-days: 7
 
   sbom:
     # CycloneDX SBOMs for the frozen Python set and the installer's npm
