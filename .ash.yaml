@@ -182,8 +182,16 @@ scanners:
     enabled: false
 
   # Dependency vulnerability scanning
+  #
+  # ASH 3.7.1's npm-audit scanner cannot report anything: it locates every
+  # finding at node_modules/<pkg>/package.json, and ASH drops any finding under
+  # node_modules/ (KNOWN_IGNORE_PATHS in core/constants.py, applied in
+  # utils/sarif_utils.py), whatever this file says. It ran npm audit, found
+  # lodash 4.17.20 and still reported 0 findings. Grype reads the lockfiles and
+  # covers the same advisories, as does the dependency-review CI job. Re-enable
+  # once an ASH release locates npm-audit findings at the lockfile.
   npm-audit:
-    enabled: true
+    enabled: false
 
   grype:
     enabled: true
