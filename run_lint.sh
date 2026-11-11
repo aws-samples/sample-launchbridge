@@ -2,13 +2,13 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 # Fix (default) or check the lint and formatting issues that the CI
-# `format-lint` job in .gitlab-ci.yml fails on.
+# `format-lint` job in .github/workflows/ci.yml fails on.
 #
 #   ./run_lint.sh           auto-fix with ruff and Prettier, then report what is left
 #   ./run_lint.sh --check   change nothing; pass or fail the way CI would
 #
 # Needs python3, npx (Node.js) and git. shellcheck is used if it is installed.
-# Tool versions and exclusions mirror .gitlab-ci.yml, so keep the two in sync.
+# CI runs this script with --check; keep tool versions here in sync with ci.yml.
 
 set -o pipefail
 cd "$(dirname "$0")" || exit 1
@@ -32,9 +32,9 @@ case "${1:-}" in
         ;;
 esac
 
-# Exclusions copied from the format-lint job.
+# Exclusions used by the CI format-lint job.
 RUFF_EXCLUDE=".venv,node_modules,.ash,dist,build,infra/cdk.out,tests/targets,project_dependencies,tests/regression/baselines"
-PRETTIER_YAML_EXCLUDE='(^|/)(node_modules|\.venv|dist|build|\.ash|docs|tests/targets|tests/regression/baselines|tests/regression/outputs)/|(^|/)(package-lock\.json|tailwind\.config\.js|\.gitlab-ci\.yml)$'
+PRETTIER_YAML_EXCLUDE='(^|/)(node_modules|\.venv|dist|build|\.ash|docs|tests/targets|tests/regression/baselines|tests/regression/outputs)/|(^|/)(package-lock\.json|tailwind\.config\.js)$'
 SHELLCHECK_EXCLUDE='(^|/)(node_modules|\.venv|\.ash|docs|tests/targets)/'
 YAMLLINT_CONFIG="{extends: default, rules: {line-length: {max: 200}, document-start: disable, comments: {min-spaces-from-content: 1}}}"
 

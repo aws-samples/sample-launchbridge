@@ -1,0 +1,239 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+# yaml-language-server: $schema=https://raw.githubusercontent.com/awslabs/automated-security-helper/main/automated_security_helper/schemas/AshConfig.json
+#
+# ASH (Automated Security Helper) Configuration for LaunchBridge
+# ----------------------------------------------------------------
+
+project_name: launchbridge
+
+# Fail the scan when any finding at or above the severity threshold
+# is reported. CI gating relies on this.
+fail_on_findings: true
+
+# Plugin modules to load (none currently).
+ash_plugin_modules: []
+
+# External reports to merge into ASH output (none currently).
+external_reports_to_include: []
+
+global_settings:
+  # Promote MEDIUM-and-above to blocking. LOW/INFO findings are
+  # surfaced in the report but do not fail CI.
+  severity_threshold: MEDIUM
+
+  # Paths that ASH should not even read. Use this for vendored
+  # third-party code, fixture trees, and generated artefacts.
+  ignore_paths:
+    - path: "node_modules/**"
+      reason: "npm dependencies — scanned via npm-audit/Grype, not source-level scanners"
+    - path: ".venv_lb/**"
+      reason: "Project virtualenv — not source code"
+    - path: ".venv_lint/**"
+      reason: "Lint virtualenv — not source code"
+    - path: ".pytest_cache/**"
+      reason: "pytest cache — generated artefact"
+    - path: ".ruff_cache/**"
+      reason: "ruff cache — generated artefact"
+    - path: ".lint_reports/**"
+      reason: "Lint report output — generated artefact"
+  suppressions:
+    # === Dependency advisories (not reachable as shipped) ===
+    - rule_id: "GHSA-84m7-p3x7-pcfv-mcp"
+      path: "project_dependencies/requirements.lock.txt"
+      reason: >-
+        mcp 2.1.1 (GHSA-84m7-p3x7-pcfv / CVE-2026-59951) affects only stateful
+        Streamable HTTP servers; every MCP server LaunchBridge registers runs over
+        stdio, which the advisory excludes. Neither fixed line can be installed:
+        awslabs-aws-documentation-mcp-server 1.2.2 requires mcp>=2.0, which rules
+        out 1.30.0, and IRIS c2f9b59 and strands-agents 1.60.0 (the pinned
+        versions) require mcp<2.2, which rules out 2.2.0. Remove once IRIS and
+        strands-agents allow mcp>=2.2.0 and the lock is re-frozen.
+      expiration: "2027-01-31"
+    - rule_id: "GHSA-5h93-6whr-6q8j-mcp"
+      path: "project_dependencies/requirements.lock.txt"
+      reason: >-
+        mcp 2.1.1 (GHSA-5h93-6whr-6q8j / CVE-2026-116685): the Streamable HTTP
+        and SSE client transports and the OAuth client providers follow
+        cross-origin redirects with custom headers and bodies. LaunchBridge
+        never uses the SDK's HTTP client transports or OAuth providers: every
+        MCP server it registers runs over stdio, and the launcher refuses an
+        IRIS config with mcp_servers (the only way IRIS would connect to one).
+        The fix (2.2.0) is blocked by the same pins as GHSA-84m7-p3x7-pcfv
+        (IRIS c2f9b59 and strands-agents 1.60.0 require mcp<2.2). Remove once
+        they allow 2.2.0 and the lock is re-frozen.
+      expiration: "2027-01-31"
+    - rule_id: "GHSA-w4fh-qvv9-3v23-mcp"
+      path: "project_dependencies/requirements.lock.txt"
+      reason: >-
+        mcp 2.1.1 (GHSA-w4fh-qvv9-3v23 / CVE-2026-116684): the server-side
+        bearer authentication of HTTP servers doesn't check a token's audience.
+        LaunchBridge's MCP servers run over stdio with no SDK bearer
+        authentication. Fix (2.2.0) blocked as for GHSA-5h93-6whr-6q8j; remove
+        on the same re-freeze.
+      expiration: "2027-01-31"
+    - rule_id: "GHSA-rwrf-2pqf-9j8j-mcp"
+      path: "project_dependencies/requirements.lock.txt"
+      reason: >-
+        mcp 2.1.1 (GHSA-rwrf-2pqf-9j8j / CVE-2026-116686): the SDK client
+        fetches $ref URLs a connected server puts in a tool's output schema.
+        LaunchBridge's processes are MCP servers; the only client path, IRIS
+        connecting to configured mcp_servers, is refused by the launcher and
+        the indexing script. Fix (2.2.0) blocked as for GHSA-5h93-6whr-6q8j;
+        remove on the same re-freeze.
+      expiration: "2027-01-31"
+    - rule_id: "GHSA-r4j5-9xpp-3985-tornado"
+      path: "project_dependencies/requirements.lock.txt"
+      reason: >-
+        tornado 6.5.10 (GHSA-r4j5-9xpp-3985 / CVE-2026-115927): an HTTP/1.1
+        server's event loop blocks on chunked bodies made of many tiny chunks.
+        tornado is a dependency of IRIS (the lock records it "via iris");
+        LaunchBridge starts no tornado or streamlit server. 6.6 fixes it and IRIS allows it, but
+        reaching it re-resolves every PyPI pin (freeze_deps.py), so it waits for
+        the next dependency re-freeze. Remove then.
+      expiration: "2026-12-31"
+    - rule_id: "GHSA-pcg2-g6cj-q92c-tornado"
+      path: "project_dependencies/requirements.lock.txt"
+      reason: >-
+        tornado 6.5.10 (GHSA-pcg2-g6cj-q92c / CVE-2026-116577): quadratic CPU
+        in an HTTP server's header parser on folded header lines. No tornado
+        server runs in LaunchBridge (see GHSA-r4j5-9xpp-3985); remove on the
+        same re-freeze.
+      expiration: "2026-12-31"
+    - rule_id: "*-pillow"
+      path: "project_dependencies/requirements.lock.txt"
+      reason: >-
+        pillow 12.3.0 image-decoder advisories (41 in Grype on 2026-10-29, among
+        them out-of-bounds reads and denial of service on crafted images; all
+        fixed in 13.0.0 and none in a 12.x release). Pillow decodes images in two places: project artifacts (PDF,
+        PPTX, images) during optional artifact indexing, and images named in
+        predictions in evaluate-predictions with the eval_toolkit_media extra.
+        Both can come from customers or third parties. 13.0.0 cannot be
+        installed: strands-agents-tools 0.8.9 (pinned; 0.8.10, the latest, too)
+        and streamlit, both required by IRIS, require pillow<13. Accepted residual; the README and
+        release notes tell users not to index or evaluate untrusted files until it
+        is updated. Covers every pillow advisory against the lock because no fixed
+        version is installable whatever the advisory; the short expiry forces a
+        review. Remove once strands-agents-tools and streamlit allow 13 and the lock is
+        re-frozen.
+      expiration: "2026-12-31"
+
+    # === Test suite ===
+    - rule_id: "B101"
+      path: "tests/**"
+      reason: "assert is the standard pytest assertion mechanism; intentional in test files"
+    - rule_id: "B404"
+      path: "tests/**"
+      reason: "Unit tests import subprocess to drive the scripts under test (git, node, the scripts themselves) with list-form argv (no shell); test code is never packaged or deployed"
+    - rule_id: "B314"
+      path: "tests/check_required_skips.py"
+      reason: >-
+        Parses only the JUnit report.xml that pytest writes earlier in the same
+        CI job, never external input. Python 3.12's bundled expat also refuses
+        external entities and limits entity expansion.
+    - rule_id: "B405"
+      path: "tests/check_required_skips.py"
+      reason: "Import of xml.etree for the trusted pytest report; see B314 above"
+    - rule_id: "SECRET-AWS-ACCESS-KEY"
+      path: "tests/**"
+      reason: "Fixtures use the example access key from the AWS documentation — not a real credential"
+
+    # === Pinned checksums ===
+    - rule_id: "SECRET-HEX-HIGH-ENTROPY-STRING"
+      path: ".github/workflows/*.yml"
+      reason: "Pinned SHA-256 checksums and action/commit SHAs; review when the CI pins change"
+      expiration: "2027-06-30"
+
+scanners:
+  # Python static analysis
+  bandit:
+    enabled: true
+    options:
+      confidence_level: all
+      ignore_nosec: false
+
+  # Multi-language static analysis
+  semgrep:
+    enabled: true
+
+  # OpenGrep duplicates the Semgrep ruleset here and is not packaged in the CI
+  # image; keep one supported SAST engine instead of a permanently missing one.
+  opengrep:
+    enabled: false
+
+  # Secrets detection
+  detect-secrets:
+    enabled: true
+
+  # IaC / config security
+  checkov:
+    enabled: true
+    options:
+      frameworks:
+        - all
+      severity_threshold: LOW
+
+  cfn-nag:
+    enabled: true
+
+  # No AWS CDK application is shipped in this repository; CloudFormation and
+  # Terraform baselines are covered by cfn-nag and Checkov.
+  cdk-nag:
+    enabled: false
+
+  # Dependency vulnerability scanning
+  npm-audit:
+    enabled: true
+
+  grype:
+    enabled: true
+
+  # ASH 3.5.3 cannot parse the pinned Syft JSON output in this CI image; Grype
+  # remains enabled for dependency/vulnerability coverage.
+  syft:
+    enabled: false
+
+reporters:
+  # Machine-readable
+  sarif:
+    enabled: true
+  flat-json:
+    enabled: true
+  cyclonedx:
+    enabled: true
+  ocsf:
+    enabled: true
+  # GitHub ingests the SARIF report via code scanning instead.
+  gitlab-sast:
+    enabled: false
+
+  # Human-readable
+  markdown:
+    enabled: true
+    options:
+      include_summary: true
+      include_detailed_findings: true
+      include_findings_table: true
+      max_detailed_findings: 150
+      top_hotspots_limit: 10
+      use_collapsible_details: true
+  html:
+    enabled: true
+  text:
+    enabled: true
+
+  # Test reporting
+  junitxml:
+    enabled: true
+
+  # Disabled by default
+  spdx:
+    enabled: false
+  yaml:
+    enabled: false
+
+converters:
+  archive:
+    enabled: true
+  jupyter:
+    enabled: true
