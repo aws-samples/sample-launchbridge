@@ -80,7 +80,7 @@ export async function promptForAgents(manifestAgents = null) {
 export async function promptForMethod() {
     const { method } = await inquirer.prompt([
         p({
-            type: 'list',
+            type: 'select',
             name: 'method',
             message: 'Select the installation method:',
             choices: [
@@ -123,7 +123,7 @@ export async function promptForSkillCategories(
     }
     const { installMode } = await inquirer.prompt([
         p({
-            type: 'list',
+            type: 'select',
             name: 'installMode',
             message: 'Which skills would you like to install?',
             choices: [
@@ -243,7 +243,7 @@ export async function promptForConflictResolution(skillName) {
 
     const { resolution } = await inquirer.prompt([
         p({
-            type: 'list',
+            type: 'select',
             name: 'resolution',
             message: `How to handle "${skillName}"?`,
             choices: [
@@ -277,7 +277,7 @@ export async function promptForOrphanResolution(orphanNames, targetPath) {
 
     const { resolution } = await inquirer.prompt([
         p({
-            type: 'list',
+            type: 'select',
             name: 'resolution',
             message: 'How to handle previously installed skills?',
             choices: [
@@ -299,7 +299,7 @@ export async function promptForOrphanResolution(orphanNames, targetPath) {
     for (const name of orphanNames) {
         const { choice } = await inquirer.prompt([
             p({
-                type: 'list',
+                type: 'select',
                 name: 'choice',
                 message: `Remove orphaned directory "${name}"?`,
                 choices: [

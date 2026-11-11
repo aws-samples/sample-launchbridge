@@ -24,3 +24,9 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
+    ignore:
+      # Keep the Node type definitions on the oldest Node major the installer
+      # supports (engines in package.json), so editors don't offer APIs that
+      # are missing there. Raise together with engines.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
