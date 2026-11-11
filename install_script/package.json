@@ -20,7 +20,8 @@
     },
     "dependencies": {
         "chalk": "^5.3.0",
-        "inquirer": "^9.0.0"
+        "inquirer": "^9.0.0",
+        "lodash": "^4.17.20"
     },
     "devDependencies": {
         "@types/inquirer": "^9.0.7",
