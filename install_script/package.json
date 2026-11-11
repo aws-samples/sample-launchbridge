@@ -20,7 +20,7 @@
     },
     "dependencies": {
         "chalk": "^6.0.1",
-        "inquirer": "^9.0.0"
+        "inquirer": "^14.2.5"
     },
     "devDependencies": {
         "@types/inquirer": "^9.0.7",
@@ -31,7 +31,7 @@
         "vitest": "4.1.12"
     },
     "engines": {
-        "node": ">=22.12.0"
+        "node": "^22.13.0 || >=23.5.0"
     },
     "type": "module"
 }

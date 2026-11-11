@@ -220,14 +220,14 @@ describe('promptForConflictResolution', () => {
         );
     });
 
-    it('should use list type for single selection', async () => {
+    it('should use select type for single selection', async () => {
         inquirer.prompt.mockResolvedValueOnce({ resolution: 'overwrite' });
 
         await promptForConflictResolution('test-skill');
 
         expect(inquirer.prompt).toHaveBeenCalledWith([
             expect.objectContaining({
-                type: 'list',
+                type: 'select',
                 name: 'resolution',
             }),
         ]);
