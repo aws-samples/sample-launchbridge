@@ -4,7 +4,7 @@
  * Home Clone Module
  *
  * When `launchbridge` runs from an npm package (`npm install -g
- * github:aws-samples/sample-launchbridge`, or npx) instead of a clone, it uses
+ * github:aws-samples/sample-launchbridge`) instead of a clone, it uses
  * one permanent clone of LaunchBridge in `~/.launchbridge`: cloned on the first
  * run, then handed over to on every run. Target repositories symlink to that
  * clone, and `launchbridge update` (which runs inside it) keeps it current, so

@@ -3,9 +3,9 @@
 /**
  * npm Runner Module
  *
- * Runs npm in LaunchBridge's own clone: `npm ci` after an update changes the
- * CLI's packages, and `npm link` when the npx bootstrap sets up the home
- * clone. Arguments are fixed lists built by LaunchBridge, never user input.
+ * Runs npm in LaunchBridge's own clone: `npm ci` on the first run of an npm
+ * install (in ~/.launchbridge) and after an update changes the CLI's packages.
+ * Arguments are fixed lists built by LaunchBridge, never user input.
  */
 
 import { spawn } from 'child_process';

@@ -3,7 +3,7 @@
 
 # LaunchBridge: Quick Start Install Guide
 
-Get LaunchBridge installed from its git repository and running in under 5 minutes.
+Get LaunchBridge installed and running in under 5 minutes.
 
 ---
 
@@ -18,7 +18,17 @@ Before you start, make sure you have:
 
 ---
 
-## Step 1: Clone and install
+## Step 1: Install the `launchbridge` command
+
+### Recommended: install with npm
+
+```bash
+npm install -g github:aws-samples/sample-launchbridge
+```
+
+This installs the `launchbridge` command. The first time you run `launchbridge` in a project (Step 2), it clones LaunchBridge into `~/.launchbridge`, and every later install and `launchbridge update` uses that one clone. It tracks `main` and doesn't verify release signatures; use the clone below if you need that. If you switch Node versions with nvm, run the command again under the new version. See the README's [Option A](README.md#option-a-install-the-command-with-npm-recommended).
+
+### Alternative: clone the repository (development or signed releases)
 
 To use a specific release, check out its tag after cloning (for example `git checkout v1.1.0`), and verify the tag's signature first, as described in [Verifying a release](README.md#verifying-a-release):
 
@@ -31,8 +41,6 @@ npm run setup
 ```
 
 `npm run setup` initializes the git submodules, installs the CLI dependencies from the lockfile, and links the `launchbridge` command globally on your machine.
-
-**Shortcut without a clone.** You can skip this step and run `npm install -g github:aws-samples/sample-launchbridge` instead. The first `launchbridge` run in a target project clones LaunchBridge into `~/.launchbridge`, and later installs and `launchbridge update` work as below. It doesn't verify release signatures. See the README's [Option A](README.md#option-a-install-the-command-with-npm-recommended).
 
 Clone the repository rather than downloading it as a ZIP: updates need the `.git` folder to fetch later releases. On a release tag, move to a newer release by verifying and checking out its tag, then re-running `launchbridge` in your target project; `launchbridge update` follows a branch and stops on a tag (see [Updating LaunchBridge](README.md#updating-launchbridge)).
 

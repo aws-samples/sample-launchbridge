@@ -205,8 +205,8 @@ export async function runUpdate(sourcePath, { confirm, npm = runNpm } = {}) {
     if (deliveryMethod !== 'git_repo') {
         throw new Error(
             'This installation was not set up as a git repository.\n' +
-                'The update command only works when LaunchBridge is installed via git clone.\n' +
-                'If you installed with npx, run it again with a newer release tag instead, e.g. `npx github:aws-samples/sample-launchbridge#v<version>`.'
+                'The update command only works in a git clone of LaunchBridge. Clone the repository, ' +
+                'or install with `npm install -g github:aws-samples/sample-launchbridge`, which updates through ~/.launchbridge.'
         );
     }
 

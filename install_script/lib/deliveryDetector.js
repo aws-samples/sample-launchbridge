@@ -21,7 +21,7 @@ import { safePathJoin } from './pathSanitizer.js';
  * Detects the delivery method by checking for git repository markers.
  * The source is `git_repo` when `.git` is a directory (a normal clone) or a
  * `gitdir:` file (a git worktree, or LaunchBridge checked out as a submodule).
- * Otherwise, for example a packaged copy run by npx, it is `bundled`.
+ * Otherwise, for example the package `npm install -g` installs, it is `bundled`.
  *
  * @param {string} sourcePath - Path to the LaunchBridge source
  * @returns {Promise<DeliveryMethod>}

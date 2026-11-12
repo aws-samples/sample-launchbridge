@@ -27,6 +27,20 @@ It ships as a CLI installer (`launchbridge`) that copies or symlinks the skills 
 
 The skill installer CLI helps you install LaunchBridge skills into your target repositories.
 
+**Quick install.** Install the `launchbridge` command once:
+
+```bash
+npm install -g github:aws-samples/sample-launchbridge
+```
+
+Then, in each repository you want to add the skills to:
+
+```bash
+launchbridge
+```
+
+This needs Node.js 22.13 or later, npm and git (see [Prerequisites](#prerequisites)). [Option A](#option-a-install-the-command-with-npm-recommended) below explains what it sets up; [Option B](#option-b-clone-and-link-development-and-signed-releases) covers installing from a clone.
+
 For active development, use 'symlink' so edits to skills in this repo are immediately available in your target project without reinstalling.
 
 > **Note:** Kiro IDE does not currently support symlinked skill files. If you encounter `'is not a file'` errors, reinstall using 'copy' mode instead. See [kirodotdev/Kiro#6401](https://github.com/kirodotdev/Kiro/issues/6401) for details.
@@ -272,7 +286,7 @@ launchbridge/
 ├── LICENSE                         # MIT-0
 ├── version.txt                     # Release version and release notes
 ├── run_lint.sh                     # Lint and format checks
-├── package.json                    # CLI entry point, dependencies, npm scripts and the files npm install -g ships
+├── package.json                    # CLI entry point, dependencies and npm scripts
 ├── project_dependencies/           # Git submodules (metric-library = public sample-metric-library, ai-skills = public sample-ai-skills) + pyproject.toml
 │
 ├── docs/                           # User guide (not shipped to agents)

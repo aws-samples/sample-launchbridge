@@ -480,7 +480,7 @@ function showLogo() {
 }
 
 /**
- * Runs when launchbridge is an npm package (`npm install -g`, or npx) rather
+ * Runs when launchbridge is an npm package (`npm install -g`) rather
  * than a clone: makes sure ~/.launchbridge is a clone of LaunchBridge, then
  * runs that clone's installer with the same arguments and exits with its exit
  * code. Target repositories therefore always install from the clone, and
@@ -516,7 +516,7 @@ async function bootstrapFromPackage() {
  * Wires all components together and handles the complete installation flow.
  */
 async function main() {
-    // An npm package (npm install -g, or npx) hands over to ~/.launchbridge,
+    // An npm package (npm install -g) hands over to ~/.launchbridge,
     // which has .git, real symlinks and launchbridge update.
     const scriptRoot = path.resolve(
         path.dirname(fileURLToPath(import.meta.url)),

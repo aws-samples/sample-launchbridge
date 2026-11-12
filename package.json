@@ -9,15 +9,7 @@
   },
   "files": [
     "install_script/index.js",
-    "install_script/lib/",
-    "skills/",
-    "agent_steering/",
-    "version.txt",
-    "project_dependencies/pyproject.toml",
-    "project_dependencies/constraints.txt",
-    "project_dependencies/requirements.lock.txt",
-    "project_dependencies/ai-skills/skills/",
-    "project_dependencies/metric-library/"
+    "install_script/lib/"
   ],
   "scripts": {
     "setup": "git submodule update --init && unset npm_config_allow_scripts && npm ci && npm link",
