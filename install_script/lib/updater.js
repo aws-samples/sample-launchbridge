@@ -21,6 +21,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { spawn } from 'child_process';
 import { detectDeliveryMethod } from './deliveryDetector.js';
+import { NPM_CI_ARGS, needsNpmInstall, runNpm } from './npmRunner.js';
 import {
     isPathWithin,
     safePathJoin,
@@ -192,13 +193,13 @@ export function summarizeIncomingChanges(changedPaths) {
  * error for the operator to resolve.
  *
  * @param {string} sourcePath - Path to the LaunchBridge repository root
- * @param {{ confirm?: (preview: object) => Promise<boolean> }} [options]
+ * @param {{ confirm?: (preview: object) => Promise<boolean>, npm?: typeof runNpm }} [options]
  *     `confirm` receives the preview and returns whether to apply it. Without
- *     one, nothing is applied.
- * @returns {Promise<{ output: string, branch: string, alreadyCurrent: boolean, declined?: boolean, preview?: object, submoduleWarning?: string }>}
+ *     one, nothing is applied. `npm` replaces the npm runner (tests).
+ * @returns {Promise<{ output: string, branch: string, alreadyCurrent: boolean, declined?: boolean, preview?: object, submoduleWarning?: string, npmInstalled?: boolean, npmError?: string }>}
  *     Resolves on success (including "already up to date" and "declined"), rejects with an Error on failure
  */
-export async function runUpdate(sourcePath, { confirm } = {}) {
+export async function runUpdate(sourcePath, { confirm, npm = runNpm } = {}) {
     // Ensure we are in a git repository (not a bundled install)
     const deliveryMethod = await detectDeliveryMethod(sourcePath);
     if (deliveryMethod !== 'git_repo') {
@@ -383,24 +384,33 @@ export async function runUpdate(sourcePath, { confirm } = {}) {
         ['submodule', 'update', '--init', '--recursive'],
         sourcePath
     );
-    if (subResult.code !== 0) {
-        // Return the merge output but flag the submodule issue in stderr
-        // so the caller can surface a warning.
-        return {
-            output: result.stdout.trim(),
-            branch: currentBranch,
-            alreadyCurrent: false,
-            preview,
-            submoduleWarning: `Submodule update failed (non-fatal): ${subResult.stderr.trim() || 'unknown error'}. Skill content may be stale.`,
-        };
-    }
-
-    return {
+    const updated = {
         output: result.stdout.trim(),
         branch: currentBranch,
         alreadyCurrent: false,
         preview,
     };
+    if (subResult.code !== 0) {
+        // Flag the submodule issue so the caller can surface a warning.
+        updated.submoduleWarning = `Submodule update failed (non-fatal): ${subResult.stderr.trim() || 'unknown error'}. Skill content may be stale.`;
+    }
+
+    // The CLI runs from this clone's node_modules. If the update changed the
+    // npm manifest or lockfile, reinstall now: otherwise the next run loads
+    // packages that no longer match the code (a crash, for a major bump).
+    if (needsNpmInstall(changedPaths)) {
+        const npmResult = await npm(NPM_CI_ARGS, sourcePath);
+        if (npmResult.code === 0) {
+            updated.npmInstalled = true;
+        } else {
+            updated.npmError =
+                `npm ci failed in ${sourcePath}: ` +
+                (npmResult.stderr.trim().split('\n').slice(-3).join(' ') ||
+                    'unknown error');
+        }
+    }
+
+    return updated;
 }
 
 // ── Manifest-aware post-pull sync ─────────────────────────────────────────────

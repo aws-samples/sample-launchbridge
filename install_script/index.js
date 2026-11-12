@@ -221,8 +221,15 @@ async function runUpdateCommand() {
     };
 
     try {
-        const { alreadyCurrent, declined, preview, branch, submoduleWarning } =
-            await runUpdate(sourcePath, { confirm });
+        const {
+            alreadyCurrent,
+            declined,
+            preview,
+            branch,
+            submoduleWarning,
+            npmInstalled,
+            npmError,
+        } = await runUpdate(sourcePath, { confirm });
         if (alreadyCurrent) {
             success(`Already up to date (branch '${branch}').`);
         } else if (declined) {
@@ -237,6 +244,17 @@ async function runUpdateCommand() {
         }
         if (submoduleWarning) {
             warn(submoduleWarning);
+        }
+        if (npmInstalled) {
+            muted("Reinstalled the CLI's npm packages (npm ci).");
+        }
+        if (npmError) {
+            uiError(
+                `The update was applied, but its npm packages could not be installed.\n` +
+                    `${npmError}\n` +
+                    `Run 'npm ci' in ${sourcePath} before using launchbridge again.`
+            );
+            process.exit(1);
         }
     } catch (err) {
         uiError(`Update failed: ${err.message}`);
