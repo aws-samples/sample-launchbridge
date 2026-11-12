@@ -176,6 +176,17 @@ describe.skipIf(!hasGit)('ensureHome', () => {
         expect(result.reason).toMatch(/other\.git/);
     });
 
+    it('accepts a clone whose URL the user rewrites with insteadOf', async () => {
+        await ensureHome(home, { url: remote });
+        git(home, 'config', `url.ssh://git@example.com/x.insteadOf`, remote);
+        expect(git(home, 'remote', 'get-url', 'origin')).toBe(
+            'ssh://git@example.com/x'
+        );
+        expect((await inspectHome(home, { expectedUrl: remote })).state).toBe(
+            'ready'
+        );
+    });
+
     it('refuses a clone on another branch', async () => {
         await ensureHome(home, { url: remote });
         git(home, 'checkout', '-q', '-b', 'mine');

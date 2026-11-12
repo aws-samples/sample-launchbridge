@@ -191,7 +191,10 @@ export async function inspectHome(
         };
     }
 
-    const origin = await git(['remote', 'get-url', 'origin'], home);
+    // The stored URL, not `git remote get-url`: that applies the user's
+    // url.<base>.insteadOf rewrites (for example HTTPS to SSH), which would
+    // make a correct clone look like one of another repository.
+    const origin = await git(['config', '--get', 'remote.origin.url'], home);
     if (origin.code !== 0) {
         return { state: 'unusable', reason: "it has no 'origin' remote." };
     }
