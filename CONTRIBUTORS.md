@@ -1,12 +1,19 @@
-## Founding Authors
+## Project Manager
 
-- Peter Yu
-- Abhilash Balachandran
+- Negin Sokhandan
+
+## Core Contributors
+
+- Istvan Bako (Lead)
+- Tony Jiang
 - Wes Morishita
 - Harrison Song
+- Dony Ang
+
+## Contributors
+
+- Peter Yu
+- Vincil Bishop
+- Abhilash Balachandran
 - Andrei Kapustin
-- Istvan Bako
-- Negin Sokhandan
 - Hector Lopez
-- Tony Jiang
-- Vincil Bishop - AI Skills
