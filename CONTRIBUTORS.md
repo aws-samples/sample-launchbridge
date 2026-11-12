@@ -5,15 +5,15 @@
 ## Core Contributors
 
 - Istvan Bako (Lead)
+- Tony Jiang
 - Wes Morishita
 - Harrison Song
 - Dony Ang
-- Tony Jiang
 
 ## Contributors
 
-- Andrei Kapustin
+- Peter Yu
 - Vincil Bishop
 - Abhilash Balachandran
-- Peter Yu
+- Andrei Kapustin
 - Hector Lopez
