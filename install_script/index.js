@@ -87,6 +87,14 @@ import {
     readReleaseVersion,
 } from './lib/deliveryDetector.js';
 import { restorePackedLinks } from './lib/packedLinks.js';
+import {
+    HANDOVER_ENV,
+    ensureHome,
+    gitAvailable,
+    handOver,
+    prepareHome,
+    resolveHome,
+} from './lib/homeClone.js';
 import { determineLifecycle } from './lib/lifecycleOrchestrator.js';
 import { applyStatusResets } from './lib/statusReset.js';
 import {
@@ -474,10 +482,74 @@ function showLogo() {
 }
 
 /**
+ * Sets up the permanent home clone when running from a packaged copy (npx),
+ * then runs the clone's installer with the same arguments and exits with its
+ * exit code. Returns only when git is missing, so the caller falls back to
+ * installing by copy from the packaged copy.
+ *
+ * @returns {Promise<void>}
+ */
+async function bootstrapFromPackage() {
+    if (process.env[HANDOVER_ENV]) {
+        // The clone handed to is itself a packaged copy: never loop.
+        uiError(
+            'The LaunchBridge home folder is not a git clone. Remove it and run the npx command again.'
+        );
+        process.exit(1);
+    }
+    if (!(await gitAvailable())) {
+        warn(
+            "git is not installed, so LaunchBridge can't set up its shared clone in ~/.launchbridge. " +
+                'Installing by copy from this packaged copy instead; install git and run this again for symlink installs and launchbridge update.'
+        );
+        spacer();
+        return;
+    }
+
+    let home;
+    try {
+        home = resolveHome();
+        const { created } = await ensureHome(home);
+        if (created) {
+            success(`Cloned LaunchBridge into ${home}`);
+        } else {
+            muted(
+                `Using LaunchBridge in ${home}. Run 'launchbridge update' to get the latest version.`
+            );
+        }
+        const { linked, linkError } = await prepareHome(home);
+        if (linked) {
+            success(`The 'launchbridge' command now runs from ${home}`);
+        } else {
+            warn(
+                `Could not add the 'launchbridge' command (npm link: ${linkError}).\n` +
+                    '  Run it without the link, or add an alias to your shell profile:\n' +
+                    `  alias launchbridge='node "${path.join(home, 'install_script', 'index.js')}"'`
+            );
+        }
+    } catch (err) {
+        uiError(err.message);
+        process.exit(1);
+    }
+    spacer();
+    process.exit(await handOver(home, process.argv.slice(2)));
+}
+
+/**
  * Main CLI orchestrator function.
  * Wires all components together and handles the complete installation flow.
  */
 async function main() {
+    // A packaged copy (npx) hands over to the home clone, which has .git,
+    // symlinks and launchbridge update. It returns only if git is missing.
+    const scriptRoot = path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '..'
+    );
+    if ((await detectDeliveryMethod(scriptRoot)) === 'bundled') {
+        await bootstrapFromPackage();
+    }
+
     // Dispatch subcommands before running the default install flow
     const subcommand = process.argv[2];
     if (subcommand === 'update') {
@@ -578,7 +650,9 @@ async function main() {
         ? resolvedFlags.agents
         : await promptForAgents(manifestAgents);
     // Symlinks into a packaged copy would dangle as soon as npm prunes its
-    // cache, so a bundled source installs by copy only.
+    // cache, so a bundled source installs by copy only. This path runs only
+    // when git is missing; otherwise the bootstrap handed over to the home
+    // clone before getting here.
     let method;
     if (sourceDelivery === 'bundled') {
         if (resolvedFlags.method === 'symlink') {
