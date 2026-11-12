@@ -32,7 +32,7 @@ npm run setup
 
 `npm run setup` initializes the git submodules, installs the CLI dependencies from the lockfile, and links the `launchbridge` command globally on your machine.
 
-**Shortcut without a clone.** You can skip this step and run a release straight from GitHub inside your target project: `npx --yes github:aws-samples/sample-launchbridge#v1.1.0`. This always installs with the `copy` method, cannot verify the release signature, and has no `launchbridge update`; to move to a newer release, run it again with the new tag. See the README's [Option A](README.md#option-a-run-the-installer-with-npx-no-clone).
+**Shortcut without a clone.** You can skip this step and run `npx github:aws-samples/sample-launchbridge` inside your target project instead, then answer `y` when npx asks to download and run it. The first run clones LaunchBridge into `~/.launchbridge` and adds the `launchbridge` command, so later installs and `launchbridge update` work as below. It doesn't verify release signatures. See the README's [Option A](README.md#option-a-run-the-installer-with-npx-recommended).
 
 Clone the repository rather than downloading it as a ZIP: updates need the `.git` folder to fetch later releases. On a release tag, move to a newer release by verifying and checking out its tag, then re-running `launchbridge` in your target project; `launchbridge update` follows a branch and stops on a tag (see [Updating LaunchBridge](README.md#updating-launchbridge)).
 

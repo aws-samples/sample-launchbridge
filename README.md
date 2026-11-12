@@ -36,6 +36,7 @@ For active development, use 'symlink' so edits to skills in this repo are immedi
 - Python version 3.12 or higher
 - [Node.js](https://nodejs.org/) (v22.13 or higher recommended)
 - npm (comes with Node.js)
+- git
 - AWS Profile with Credentials
 
 #### AWS Credentials
@@ -63,16 +64,34 @@ Optional features need more, only when you turn them on. Scope each to its resou
 
 For example, the S3 part of transcription can be limited to `arn:aws:s3:::<bucket>` for `s3:GetBucketLocation` and `arn:aws:s3:::<bucket>/iris-transcribe-temp/*` for the object actions.
 
-#### Option A: run the installer with npx (no clone)
+#### Option A: run the installer with npx (recommended)
 
-From your target repository, run a release directly from GitHub. Pin the release tag; npm fetches the repository and its submodules at that tag:
+From your target repository, run:
 
 ```bash
 cd /path/to/your-target-repo
-npx --yes github:aws-samples/sample-launchbridge#v1.1.0
+npx github:aws-samples/sample-launchbridge
 ```
 
-This installs with the `copy` method (a symlink install needs a persistent clone, see Option B) and does not verify the tag's signature; npm resolves the tag to a commit but checks nothing else. To move to a newer release, run the same command with the new tag; `launchbridge update` is not available for npx installs. Use Option B if you want signed-release verification, symlink installs or `launchbridge update`.
+npx first asks whether to download and run the package (`Ok to proceed?`); answer `y` to continue. The first run then sets LaunchBridge up on your machine:
+
+1. Clones `main`, with its submodules, into `~/.launchbridge`. Set `LAUNCHBRIDGE_HOME` to an absolute path to use another folder.
+2. Installs the CLI's npm packages there and links the `launchbridge` command with `npm link`.
+3. Runs the installer in the current folder from that clone, so a symlink install links your repository's skills to `~/.launchbridge`.
+
+After that, use the `launchbridge` command directly:
+
+- `launchbridge` in any other repository installs from the same clone.
+- `launchbridge update` updates the clone once, and every repository with a symlink install sees the new skills.
+
+Running the npx command again is safe: it reuses the clone and doesn't update it; use `launchbridge update` for that. `~/.launchbridge` must hold only the clone. If it exists but isn't a clean clone of this repository on `main`, the installer stops and changes nothing.
+
+Notes:
+
+- **Command not found after switching Node versions.** `npm link` adds the command for the current Node version only (nvm and similar tools keep one global folder per version). Run the npx command again; your skill links aren't affected.
+- **`npm link` fails** (for example a permissions error on a system-wide Node install). The installer still finishes and prints an alias to add to your shell profile instead. It never uses `sudo`.
+- **No `git`.** Without git, the npx command installs by copy from npm's cache and there is no `launchbridge` command or `launchbridge update`.
+- **No signature check.** npx and `main` don't verify release signatures; use Option B and [Verifying a release](#verifying-a-release) when that matters to you.
 
 #### Option B: clone and link (development and signed releases)
 
@@ -105,7 +124,7 @@ The installer will:
 
 #### Updating LaunchBridge
 
-To pull the latest changes and sync them to your target project in one command:
+To pull the latest changes and sync them to your target project in one command (this updates `~/.launchbridge` if you installed with npx, or your own clone):
 
 ```bash
 cd /path/to/your-target-repo
