@@ -1,9 +1,10 @@
-## Project Lead
+## Project Manager
 
-- Istvan Bako
+- Negin Sokhandan
 
 ## Core Contributors
 
+- Istvan Bako (Lead)
 - Wes Morishita
 - Harrison Song
 - Dony Ang
@@ -12,8 +13,7 @@
 ## Contributors
 
 - Andrei Kapustin
-- Vincil Bishop - AI Skills
+- Vincil Bishop
 - Abhilash Balachandran
 - Peter Yu
-- Negin Sokhandan
 - Hector Lopez
