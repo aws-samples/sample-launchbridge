@@ -64,34 +64,30 @@ Optional features need more, only when you turn them on. Scope each to its resou
 
 For example, the S3 part of transcription can be limited to `arn:aws:s3:::<bucket>` for `s3:GetBucketLocation` and `arn:aws:s3:::<bucket>/iris-transcribe-temp/*` for the object actions.
 
-#### Option A: run the installer with npx (recommended)
+#### Option A: install the command with npm (recommended)
 
-From your target repository, run:
+Install the `launchbridge` command once:
+
+```bash
+npm install -g github:aws-samples/sample-launchbridge
+```
+
+Then run it in each target repository:
 
 ```bash
 cd /path/to/your-target-repo
-npx github:aws-samples/sample-launchbridge
+launchbridge
 ```
 
-npx first asks whether to download and run the package (`Ok to proceed?`); answer `y` to continue. The first run then sets LaunchBridge up on your machine:
+The first `launchbridge` run clones `main`, with its submodules, into `~/.launchbridge` and installs its npm packages there. Every run installs from that one clone, so a symlink install links your repository's skills to `~/.launchbridge`. `launchbridge update` updates the clone once, and every repository with a symlink install sees the new skills; each repository's lb-setup then reviews the changed skills.
 
-1. Clones `main`, with its submodules, into `~/.launchbridge`. Set `LAUNCHBRIDGE_HOME` to an absolute path to use another folder.
-2. Installs the CLI's npm packages there and links the `launchbridge` command with `npm link`.
-3. Runs the installer in the current folder from that clone, so a symlink install links your repository's skills to `~/.launchbridge`.
-
-After that, use the `launchbridge` command directly:
-
-- `launchbridge` in any other repository installs from the same clone.
-- `launchbridge update` updates the clone once, and every repository with a symlink install sees the new skills.
-
-Running the npx command again is safe: it reuses the clone and doesn't update it; use `launchbridge update` for that. `~/.launchbridge` must hold only the clone. If it exists but isn't a clean clone of this repository on `main`, the installer stops and changes nothing.
+`~/.launchbridge` must hold only the clone. If it exists but isn't a clone of this repository, `launchbridge` stops and changes nothing.
 
 Notes:
 
-- **Command not found after switching Node versions.** `npm link` adds the command for the current Node version only (nvm and similar tools keep one global folder per version). Run the npx command again; your skill links aren't affected.
-- **`npm link` fails** (for example a permissions error on a system-wide Node install). The installer still finishes and prints an alias to add to your shell profile instead. It never uses `sudo`.
-- **No `git`.** Without git, the npx command installs by copy from npm's cache and there is no `launchbridge` command or `launchbridge update`.
-- **No signature check.** npx and `main` don't verify release signatures; use Option B and [Verifying a release](#verifying-a-release) when that matters to you.
+- **After switching Node versions** (nvm and similar tools), the command isn't found until you run `npm install -g github:aws-samples/sample-launchbridge` again under the new version. Your skill links point at `~/.launchbridge`, so they aren't affected.
+- **Permission errors from `npm install -g`** come from a system-wide Node install; follow npm's guide to [resolving EACCES permissions errors](https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally) rather than using `sudo`.
+- **No signature check.** This path tracks `main` and doesn't verify release signatures; use Option B and [Verifying a release](#verifying-a-release) when that matters to you.
 
 #### Option B: clone and link (development and signed releases)
 
@@ -124,7 +120,7 @@ The installer will:
 
 #### Updating LaunchBridge
 
-To pull the latest changes and sync them to your target project in one command (this updates `~/.launchbridge` if you installed with npx, or your own clone):
+To pull the latest changes and sync them to your target project in one command (this updates `~/.launchbridge` if you installed with npm, or your own clone):
 
 ```bash
 cd /path/to/your-target-repo
@@ -162,7 +158,7 @@ echo 'launchbridge-release namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA
 git -c gpg.ssh.allowedSignersFile=~/.config/launchbridge/allowed_signers verify-tag v1.1.0
 ```
 
-A good signature prints `Good "git" signature for launchbridge-release`. Do not use a tag that fails verification. `launchbridge update` shows the incoming commits for review but does not itself verify tag signatures, and `npx github:…#<tag>` performs no verification at all; clone and verify the tag when that matters to you.
+A good signature prints `Good "git" signature for launchbridge-release`. Do not use a tag that fails verification. `launchbridge update` shows the incoming commits for review but does not itself verify tag signatures, and `npm install -g github:…` performs no verification at all; clone and verify the tag when that matters to you.
 
 ## AI Skills (optional add-on)
 
@@ -276,7 +272,7 @@ launchbridge/
 ├── LICENSE                         # MIT-0
 ├── version.txt                     # Release version and release notes
 ├── run_lint.sh                     # Lint and format checks
-├── package.json                    # CLI entry point, dependencies, npm scripts and the files npx ships
+├── package.json                    # CLI entry point, dependencies, npm scripts and the files npm install -g ships
 ├── project_dependencies/           # Git submodules (metric-library = public sample-metric-library, ai-skills = public sample-ai-skills) + pyproject.toml
 │
 ├── docs/                           # User guide (not shipped to agents)

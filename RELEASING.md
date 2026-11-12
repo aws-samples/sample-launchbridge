@@ -41,7 +41,7 @@ Run these from a clean clone of the commit you intend to release:
 ```bash
 npm run setup
 npm test
-npm pack --dry-run   # the file list is what `npx github:…` installs; check nothing is missing
+npm pack --dry-run   # the file list is what `npm install -g github:…` installs; check nothing is missing
 uv run --no-project --python 3.12 \
   --with numpy==2.5.4 --with boto3==1.43.112 --with munkres==1.1.4 \
   --with pydantic==2.13.5 --with pytest==9.1.1 --with pyyaml==6.0.3 \

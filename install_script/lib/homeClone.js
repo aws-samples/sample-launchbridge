@@ -3,16 +3,17 @@
 /**
  * Home Clone Module
  *
- * When the installer runs from a packaged copy (for example
- * `npx github:aws-samples/sample-launchbridge`), it sets up one permanent clone
- * of LaunchBridge per machine and hands over to it, so target repositories can
- * symlink to a copy that `launchbridge update` keeps current.
+ * When `launchbridge` runs from an npm package (`npm install -g
+ * github:aws-samples/sample-launchbridge`, or npx) instead of a clone, it uses
+ * one permanent clone of LaunchBridge in `~/.launchbridge`: cloned on the first
+ * run, then handed over to on every run. Target repositories symlink to that
+ * clone, and `launchbridge update` (which runs inside it) keeps it current, so
+ * one update reaches every repository.
  *
- * The clone lives at `$LAUNCHBRIDGE_HOME` (absolute) or `~/.launchbridge`, and
- * holds the git working tree and its node_modules only. Per-machine state stays
- * in `~/.config/launchbridge/` (stateDir.js). An existing folder is used only
- * when it is a clean clone of the expected repository on `main`; anything else
- * is reported and left untouched.
+ * The clone holds the git working tree and its node_modules only; per-machine
+ * state stays in `~/.config/launchbridge/` (stateDir.js). An existing
+ * `~/.launchbridge` is used only when it is a clone of this repository;
+ * anything else is reported and left untouched.
  */
 
 import crypto from 'crypto';
@@ -32,17 +33,9 @@ export const HOME_BRANCH = 'main';
 /** Set in the hand-over child so a clone never bootstraps again. */
 export const HANDOVER_ENV = 'LAUNCHBRIDGE_HANDOVER';
 
-/** Arguments for `npm link` in the home clone. */
-export const NPM_LINK_ARGS = Object.freeze([
-    'link',
-    '--ignore-scripts',
-    '--no-audit',
-    '--no-fund',
-]);
-
 // Variables that would point git at some other repository than the one in cwd
-// (for example when npx runs inside a git hook). Git's own config variables,
-// such as GIT_CONFIG_COUNT, are kept.
+// (for example when launchbridge runs inside a git hook). Git's own config
+// variables, such as GIT_CONFIG_COUNT, are kept.
 const REPO_SELECTING_GIT_VARS = [
     'GIT_DIR',
     'GIT_WORK_TREE',
@@ -95,41 +88,14 @@ export function runGit(args, cwd) {
     });
 }
 
-/**
- * Whether git can be run at all.
- *
- * @param {typeof runGit} [git]
- * @returns {Promise<boolean>}
- */
-export async function gitAvailable(git = runGit) {
-    const result = await git(['--version'], os.tmpdir());
-    return result.code === 0;
+/** The home clone's location: `~/.launchbridge`. */
+export function homePath() {
+    return path.join(os.homedir(), '.launchbridge');
 }
 
 /**
- * The home clone's location.
- *
- * @param {NodeJS.ProcessEnv} [env]
- * @param {string} [homedir]
- * @returns {string}
- * @throws {Error} When LAUNCHBRIDGE_HOME is set but not absolute
- */
-export function resolveHome(env = process.env, homedir = os.homedir()) {
-    const configured = env.LAUNCHBRIDGE_HOME;
-    if (configured) {
-        if (!path.isAbsolute(configured)) {
-            throw new Error(
-                `LAUNCHBRIDGE_HOME must be an absolute path, not '${configured}'.`
-            );
-        }
-        return path.resolve(configured);
-    }
-    return path.join(homedir, '.launchbridge');
-}
-
-/**
- * Normalizes a git remote URL for comparison: lower-case host, no trailing
- * slash or `.git`.
+ * Normalizes a git remote URL for comparison: lower-case scheme and host, no
+ * trailing slash or `.git`.
  *
  * @param {string} url
  * @returns {string}
@@ -146,90 +112,13 @@ export function normalizeRemoteUrl(url) {
     return u;
 }
 
-/**
- * Describes the home folder.
- *
- * @param {string} home
- * @param {{ git?: typeof runGit, expectedUrl?: string }} [options]
- * @returns {Promise<{ state: 'missing' } | { state: 'empty' } | { state: 'ready' } | { state: 'unusable', reason: string }>}
- */
-export async function inspectHome(
-    home,
-    { git = runGit, expectedUrl = HOME_REPO_URL } = {}
-) {
-    let stat;
+async function exists(p) {
     try {
-        stat = await fs.stat(home);
-    } catch (err) {
-        if (err.code === 'ENOENT') {
-            return { state: 'missing' };
-        }
-        return { state: 'unusable', reason: `it can't be read (${err.code}).` };
+        await fs.lstat(p);
+        return true;
+    } catch {
+        return false;
     }
-    if (!stat.isDirectory()) {
-        return { state: 'unusable', reason: 'it is not a folder.' };
-    }
-    const entries = await fs.readdir(home);
-    if (entries.length === 0) {
-        return { state: 'empty' };
-    }
-    if (!entries.includes('.git')) {
-        return {
-            state: 'unusable',
-            reason: 'it is not a git clone of LaunchBridge.',
-        };
-    }
-
-    const top = await git(['rev-parse', '--show-toplevel'], home);
-    if (
-        top.code !== 0 ||
-        path.resolve(top.stdout.trim()) !== (await fs.realpath(home))
-    ) {
-        return {
-            state: 'unusable',
-            reason: 'it is not the top of a git clone.',
-        };
-    }
-
-    // The stored URL, not `git remote get-url`: that applies the user's
-    // url.<base>.insteadOf rewrites (for example HTTPS to SSH), which would
-    // make a correct clone look like one of another repository.
-    const origin = await git(['config', '--get', 'remote.origin.url'], home);
-    if (origin.code !== 0) {
-        return { state: 'unusable', reason: "it has no 'origin' remote." };
-    }
-    if (normalizeRemoteUrl(origin.stdout) !== normalizeRemoteUrl(expectedUrl)) {
-        return {
-            state: 'unusable',
-            reason: `its 'origin' is ${origin.stdout.trim()}, not ${expectedUrl}.`,
-        };
-    }
-
-    const branch = await git(
-        ['symbolic-ref', '--quiet', '--short', 'HEAD'],
-        home
-    );
-    if (branch.code !== 0 || branch.stdout.trim() !== HOME_BRANCH) {
-        return {
-            state: 'unusable',
-            reason: `it is not on the '${HOME_BRANCH}' branch.`,
-        };
-    }
-
-    const status = await git(['status', '--porcelain'], home);
-    if (status.code !== 0) {
-        return {
-            state: 'unusable',
-            reason: `git status failed: ${status.stderr.trim()}`,
-        };
-    }
-    if (status.stdout.trim()) {
-        return {
-            state: 'unusable',
-            reason: 'it has local changes (see git status in that folder).',
-        };
-    }
-    return { state: 'ready' };
 }
 
 /**
@@ -245,6 +134,11 @@ export async function cloneHome(
     { git = runGit, url = HOME_REPO_URL } = {}
 ) {
     const parent = path.dirname(home);
+    if ((await git(['--version'], os.tmpdir())).code !== 0) {
+        throw new Error(
+            'LaunchBridge needs git to set up ~/.launchbridge. Install git and run launchbridge again.'
+        );
+    }
     await fs.mkdir(parent, { recursive: true });
     const temp = path.join(
         parent,
@@ -266,83 +160,73 @@ export async function cloneHome(
         await fs.rm(temp, { recursive: true, force: true });
         throw new Error(`git clone failed: ${clone.stderr.trim()}`);
     }
-
-    try {
-        await fs.rmdir(home); // an empty placeholder folder, if there is one
-    } catch {
-        // missing, or not empty: the rename below decides
-    }
     try {
         await fs.rename(temp, home);
     } catch (err) {
         await fs.rm(temp, { recursive: true, force: true });
-        if (err.code === 'EEXIST' || err.code === 'ENOTEMPTY') {
-            // Another run created it meanwhile; the caller re-inspects it.
-            return;
-        }
         throw err;
     }
 }
 
 /**
- * Makes `home` a ready clone: clones it when missing or empty, refuses when it
- * is something else.
+ * Makes sure `home` is a clone of this repository, cloning it when missing.
  *
  * @param {string} home
  * @param {{ git?: typeof runGit, url?: string }} [options]
  * @returns {Promise<{ created: boolean }>}
- * @throws {Error} When the folder exists but can't be used
+ * @throws {Error} When the folder exists but is not a clone of this repository
  */
 export async function ensureHome(
     home,
     { git = runGit, url = HOME_REPO_URL } = {}
 ) {
-    const before = await inspectHome(home, { git, expectedUrl: url });
-    if (before.state === 'ready') {
-        return { created: false };
+    if (!(await exists(home))) {
+        await cloneHome(home, { git, url });
+        return { created: true };
     }
-    if (before.state === 'unusable') {
-        throw new Error(
-            `${home} can't be used as the LaunchBridge home: ${before.reason}\n` +
-                'Move or fix that folder, or set LAUNCHBRIDGE_HOME to another absolute path.'
+
+    const refuse = (reason) =>
+        new Error(
+            `${home} can't be used for LaunchBridge: ${reason}\n` +
+                'Move or remove that folder, then run launchbridge again.'
         );
+    if (!(await exists(path.join(home, '.git')))) {
+        throw refuse('it is not a git clone of LaunchBridge.');
     }
-    await cloneHome(home, { git, url });
-    const after = await inspectHome(home, { git, expectedUrl: url });
-    if (after.state !== 'ready') {
-        throw new Error(
-            `${home} was not usable after cloning: ${after.reason || after.state}`
-        );
+    // The stored URL, not `git remote get-url`: that applies the user's
+    // url.<base>.insteadOf rewrites (for example HTTPS to SSH), which would
+    // make a correct clone look like one of another repository.
+    const origin = await git(['config', '--get', 'remote.origin.url'], home);
+    if (origin.code !== 0) {
+        throw refuse("it has no 'origin' remote.");
     }
-    return { created: true };
+    if (normalizeRemoteUrl(origin.stdout) !== normalizeRemoteUrl(url)) {
+        throw refuse(`it is a clone of ${origin.stdout.trim()}, not ${url}.`);
+    }
+    return { created: false };
 }
 
 /**
- * Installs the CLI's npm packages in the home clone and links the
- * `launchbridge` command. A failed link is not fatal: the caller prints how to
- * run the CLI without it.
+ * Installs the CLI's npm packages in the home clone when it has none yet (the
+ * first run). Later changes are installed by `launchbridge update`.
  *
  * @param {string} home
  * @param {{ npm?: typeof runNpm }} [options]
- * @returns {Promise<{ linked: boolean, linkError?: string }>}
+ * @returns {Promise<{ installed: boolean }>}
  * @throws {Error} When `npm ci` fails
  */
 export async function prepareHome(home, { npm = runNpm } = {}) {
+    if (await exists(path.join(home, 'node_modules'))) {
+        return { installed: false };
+    }
     const install = await npm(NPM_CI_ARGS, home);
     if (install.code !== 0) {
-        throw new Error(
-            `npm ci failed in ${home}: ${lastLines(install.stderr)}`
-        );
+        const detail =
+            install.stderr.trim().split('\n').slice(-3).join(' ') ||
+            'unknown error';
+        throw new Error(`npm ci failed in ${home}: ${detail}`);
     }
-    const link = await npm(NPM_LINK_ARGS, home);
-    if (link.code !== 0) {
-        return { linked: false, linkError: lastLines(link.stderr) };
-    }
-    return { linked: true };
-}
-
-function lastLines(text) {
-    return text.trim().split('\n').slice(-3).join(' ') || 'unknown error';
+    return { installed: true };
 }
 
 /**

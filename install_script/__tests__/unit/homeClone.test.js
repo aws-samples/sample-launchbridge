@@ -8,12 +8,10 @@ import path from 'path';
 import { spawnSync } from 'child_process';
 import {
     HOME_REPO_URL,
-    NPM_LINK_ARGS,
     ensureHome,
-    inspectHome,
+    homePath,
     normalizeRemoteUrl,
     prepareHome,
-    resolveHome,
 } from '../../lib/homeClone.js';
 import { NPM_CI_ARGS } from '../../lib/npmRunner.js';
 
@@ -27,22 +25,9 @@ function git(cwd, ...args) {
 
 const hasGit = spawnSync('git', ['--version']).status === 0;
 
-describe('resolveHome', () => {
-    it('defaults to ~/.launchbridge', () => {
-        expect(resolveHome({}, '/home/u')).toBe(
-            path.join('/home/u', '.launchbridge')
-        );
-    });
-
-    it('uses an absolute LAUNCHBRIDGE_HOME', () => {
-        const dir = path.resolve('/opt/lb');
-        expect(resolveHome({ LAUNCHBRIDGE_HOME: dir }, '/home/u')).toBe(dir);
-    });
-
-    it('rejects a relative LAUNCHBRIDGE_HOME', () => {
-        expect(() =>
-            resolveHome({ LAUNCHBRIDGE_HOME: 'lb' }, '/home/u')
-        ).toThrow(/absolute/);
+describe('homePath', () => {
+    it('is ~/.launchbridge', () => {
+        expect(homePath()).toBe(path.join(os.homedir(), '.launchbridge'));
     });
 });
 
@@ -63,34 +48,43 @@ describe('normalizeRemoteUrl', () => {
 });
 
 describe('prepareHome', () => {
-    it('runs npm ci, then npm link, in the home clone', async () => {
-        const calls = [];
-        const npm = async (args, cwd) => {
+    let home;
+    let calls;
+    const npm =
+        (code = 0, stderr = '') =>
+        async (args, cwd) => {
             calls.push({ args: [...args], cwd });
-            return { code: 0, stdout: '', stderr: '' };
+            return { code, stdout: '', stderr };
         };
-        expect(await prepareHome('/h', { npm })).toEqual({ linked: true });
-        expect(calls).toEqual([
-            { args: [...NPM_CI_ARGS], cwd: '/h' },
-            { args: [...NPM_LINK_ARGS], cwd: '/h' },
-        ]);
+
+    beforeEach(() => {
+        calls = [];
+        home = fs.mkdtempSync(path.join(os.tmpdir(), 'lb-prepare-'));
+    });
+
+    afterEach(() => {
+        fs.rmSync(home, { recursive: true, force: true });
+    });
+
+    it('runs npm ci in a clone without node_modules', async () => {
+        expect(await prepareHome(home, { npm: npm() })).toEqual({
+            installed: true,
+        });
+        expect(calls).toEqual([{ args: [...NPM_CI_ARGS], cwd: home }]);
+    });
+
+    it('leaves a clone that already has node_modules alone', async () => {
+        fs.mkdirSync(path.join(home, 'node_modules'));
+        expect(await prepareHome(home, { npm: npm() })).toEqual({
+            installed: false,
+        });
+        expect(calls).toEqual([]);
     });
 
     it('fails when npm ci fails', async () => {
-        const npm = async () => ({ code: 1, stdout: '', stderr: 'E404\n' });
-        await expect(prepareHome('/h', { npm })).rejects.toThrow(
-            /npm ci failed.*E404/
-        );
-    });
-
-    it('reports, without failing, when npm link fails', async () => {
-        const npm = async (args) =>
-            args[0] === 'link'
-                ? { code: 1, stdout: '', stderr: 'EACCES: permission denied\n' }
-                : { code: 0, stdout: '', stderr: '' };
-        const result = await prepareHome('/h', { npm });
-        expect(result.linked).toBe(false);
-        expect(result.linkError).toContain('EACCES');
+        await expect(
+            prepareHome(home, { npm: npm(1, 'npm error code E404\n') })
+        ).rejects.toThrow(/npm ci failed.*E404/);
     });
 });
 
@@ -113,7 +107,6 @@ describe.skipIf(!hasGit)('ensureHome', () => {
         git(seed, 'checkout', '-q', '-b', 'main');
         fs.mkdirSync(path.join(seed, 'skills', 'demo'), { recursive: true });
         fs.writeFileSync(path.join(seed, 'skills', 'demo', 'SKILL.md'), 'v1\n');
-        fs.writeFileSync(path.join(seed, '.gitignore'), 'node_modules/\n');
         git(seed, 'add', '.');
         git(seed, 'commit', '-q', '-m', 'initial');
         git(seed, 'push', '-q', 'origin', 'main');
@@ -124,7 +117,7 @@ describe.skipIf(!hasGit)('ensureHome', () => {
         fs.rmSync(root, { recursive: true, force: true });
     });
 
-    it('clones into a missing home and leaves no temporary folder', async () => {
+    it('clones main into a missing home and leaves no temporary folder', async () => {
         expect(await ensureHome(home, { url: remote })).toEqual({
             created: true,
         });
@@ -135,17 +128,8 @@ describe.skipIf(!hasGit)('ensureHome', () => {
         expect(fs.readdirSync(path.dirname(home))).toEqual(['.launchbridge']);
     });
 
-    it('clones into an empty home folder', async () => {
-        fs.mkdirSync(home, { recursive: true });
-        expect(await ensureHome(home, { url: remote })).toEqual({
-            created: true,
-        });
-        expect(fs.existsSync(path.join(home, '.git'))).toBe(true);
-    });
-
-    it('reuses a ready clone, ignoring its node_modules', async () => {
+    it('reuses an existing clone', async () => {
         await ensureHome(home, { url: remote });
-        fs.mkdirSync(path.join(home, 'node_modules', 'x'), { recursive: true });
         expect(await ensureHome(home, { url: remote })).toEqual({
             created: false,
         });
@@ -171,43 +155,26 @@ describe.skipIf(!hasGit)('ensureHome', () => {
             'origin',
             'https://example.com/other.git'
         );
-        const result = await inspectHome(home, { expectedUrl: remote });
-        expect(result.state).toBe('unusable');
-        expect(result.reason).toMatch(/other\.git/);
+        await expect(ensureHome(home, { url: remote })).rejects.toThrow(
+            /other\.git/
+        );
     });
 
     it('accepts a clone whose URL the user rewrites with insteadOf', async () => {
         await ensureHome(home, { url: remote });
-        git(home, 'config', `url.ssh://git@example.com/x.insteadOf`, remote);
+        git(home, 'config', 'url.ssh://git@example.com/x.insteadOf', remote);
         expect(git(home, 'remote', 'get-url', 'origin')).toBe(
             'ssh://git@example.com/x'
         );
-        expect((await inspectHome(home, { expectedUrl: remote })).state).toBe(
-            'ready'
-        );
-    });
-
-    it('refuses a clone on another branch', async () => {
-        await ensureHome(home, { url: remote });
-        git(home, 'checkout', '-q', '-b', 'mine');
-        await expect(ensureHome(home, { url: remote })).rejects.toThrow(
-            /not on the 'main' branch/
-        );
-    });
-
-    it('refuses a clone with local changes', async () => {
-        await ensureHome(home, { url: remote });
-        fs.writeFileSync(path.join(home, 'skills/demo/SKILL.md'), 'edited\n');
-        await expect(ensureHome(home, { url: remote })).rejects.toThrow(
-            /local changes/
-        );
+        expect(await ensureHome(home, { url: remote })).toEqual({
+            created: false,
+        });
     });
 
     it('cleans up and fails when the clone fails', async () => {
         await expect(
             ensureHome(home, { url: path.join(root, 'missing.git') })
         ).rejects.toThrow(/git clone failed/);
-        expect(fs.existsSync(path.dirname(home))).toBe(true);
         expect(fs.readdirSync(path.dirname(home))).toEqual([]);
     });
 });
