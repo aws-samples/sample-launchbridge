@@ -43,7 +43,7 @@ eval_toolkit = [
 
 eval_toolkit_media = [
     # Image data type — image_data.py
-    "pillow>=10",
+    "pillow>=13.0.0",
     # Video data type — video_data.py
     "opencv-python>=4.8",
     # Audio data type — audio_data.py
