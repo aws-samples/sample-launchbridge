@@ -239,7 +239,7 @@ opencv-python==5.0.0.93
     # via launchbridge (pyproject.toml)
 openpyxl==3.1.5
     # via iris
-opentelemetry-api==1.45.1
+opentelemetry-api==1.45.2
     # via
     #   fastapi
     #   mcp
