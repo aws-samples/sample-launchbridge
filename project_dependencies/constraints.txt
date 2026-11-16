@@ -117,7 +117,7 @@ slack-bolt==1.30.0
 slack-sdk==3.45.0
 smmap==5.0.3
 soundfile==0.14.0
-soupsieve==3.0.3
+soupsieve==4.0
 sse-starlette==3.5.0
 starlette==1.7.0
 strands-agents==1.60.0
