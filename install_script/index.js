@@ -86,6 +86,13 @@ import {
     getGitCommitHash,
     readReleaseVersion,
 } from './lib/deliveryDetector.js';
+import {
+    HANDOVER_ENV,
+    ensureHome,
+    handOver,
+    homePath,
+    prepareHome,
+} from './lib/homeClone.js';
 import { determineLifecycle } from './lib/lifecycleOrchestrator.js';
 import { applyStatusResets } from './lib/statusReset.js';
 import {
@@ -220,8 +227,15 @@ async function runUpdateCommand() {
     };
 
     try {
-        const { alreadyCurrent, declined, preview, branch, submoduleWarning } =
-            await runUpdate(sourcePath, { confirm });
+        const {
+            alreadyCurrent,
+            declined,
+            preview,
+            branch,
+            submoduleWarning,
+            npmInstalled,
+            npmError,
+        } = await runUpdate(sourcePath, { confirm });
         if (alreadyCurrent) {
             success(`Already up to date (branch '${branch}').`);
         } else if (declined) {
@@ -236,6 +250,17 @@ async function runUpdateCommand() {
         }
         if (submoduleWarning) {
             warn(submoduleWarning);
+        }
+        if (npmInstalled) {
+            muted("Reinstalled the CLI's npm packages (npm ci).");
+        }
+        if (npmError) {
+            uiError(
+                `The update was applied, but its npm packages could not be installed.\n` +
+                    `${npmError}\n` +
+                    `Run 'npm ci' in ${sourcePath} before using launchbridge again.`
+            );
+            process.exit(1);
         }
     } catch (err) {
         uiError(`Update failed: ${err.message}`);
@@ -455,10 +480,52 @@ function showLogo() {
 }
 
 /**
+ * Runs when launchbridge is an npm package (`npm install -g`) rather
+ * than a clone: makes sure ~/.launchbridge is a clone of LaunchBridge, then
+ * runs that clone's installer with the same arguments and exits with its exit
+ * code. Target repositories therefore always install from the clone, and
+ * `launchbridge update` updates it.
+ *
+ * @returns {Promise<never>}
+ */
+async function bootstrapFromPackage() {
+    if (process.env[HANDOVER_ENV]) {
+        // The folder handed over to is not a clone: never loop.
+        uiError(
+            `${homePath()} is not a git clone of LaunchBridge. Remove it and run launchbridge again.`
+        );
+        process.exit(1);
+    }
+    const home = homePath();
+    try {
+        const { created } = await ensureHome(home);
+        await prepareHome(home);
+        if (created) {
+            success(`Cloned LaunchBridge into ${home}`);
+            spacer();
+        }
+    } catch (err) {
+        uiError(err.message);
+        process.exit(1);
+    }
+    process.exit(await handOver(home, process.argv.slice(2)));
+}
+
+/**
  * Main CLI orchestrator function.
  * Wires all components together and handles the complete installation flow.
  */
 async function main() {
+    // An npm package (npm install -g) hands over to ~/.launchbridge,
+    // which has .git, real symlinks and launchbridge update.
+    const scriptRoot = path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '..'
+    );
+    if ((await detectDeliveryMethod(scriptRoot)) === 'bundled') {
+        await bootstrapFromPackage();
+    }
+
     // Dispatch subcommands before running the default install flow
     const subcommand = process.argv[2];
     if (subcommand === 'update') {

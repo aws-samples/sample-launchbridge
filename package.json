@@ -9,16 +9,27 @@
   },
   "files": [
     "install_script/index.js",
-    "install_script/lib/",
-    "install_script/package.json",
-    "install_script/package-lock.json",
-    "skills/"
+    "install_script/lib/"
   ],
   "scripts": {
-    "setup": "git submodule update --init && unset npm_config_allow_scripts && cd install_script && npm ci && cd .. && npm link"
+    "setup": "git submodule update --init && unset npm_config_allow_scripts && npm ci && npm link",
+    "start": "node install_script/index.js",
+    "test": "vitest --run --config install_script/vitest.config.js",
+    "test:watch": "vitest --config install_script/vitest.config.js",
+    "format": "prettier --write \"install_script/**/*.js\"",
+    "format:check": "prettier --check \"install_script/**/*.js\""
   },
   "dependencies": {
+    "chalk": "^6.0.1",
     "inquirer": "^14.2.5"
+  },
+  "devDependencies": {
+    "@types/inquirer": "^9.0.7",
+    "@types/node": "^22.0.0",
+    "fast-check": "^3.15.0",
+    "prettier": "3.9.10",
+    "typescript": "^5.3.0",
+    "vitest": "4.1.12"
   },
   "engines": {
     "node": "^22.13.0 || >=23.5.0"

@@ -3,7 +3,7 @@
 
 # LaunchBridge: Quick Start Install Guide
 
-Get LaunchBridge installed from its git repository and running in under 5 minutes.
+Get LaunchBridge installed and running in under 5 minutes.
 
 ---
 
@@ -18,7 +18,17 @@ Before you start, make sure you have:
 
 ---
 
-## Step 1: Clone and install
+## Step 1: Install the `launchbridge` command
+
+### Recommended: install with npm
+
+```bash
+npm install -g github:aws-samples/sample-launchbridge
+```
+
+This installs the `launchbridge` command. The first time you run `launchbridge` in a project (Step 2), it clones LaunchBridge into `~/.launchbridge`, and every later install and `launchbridge update` uses that one clone. It tracks `main` and doesn't verify release signatures; use the clone below if you need that. If you switch Node versions with nvm, run the command again under the new version. See the README's [Option A](README.md#option-a-install-the-command-with-npm-recommended).
+
+### Alternative: clone the repository (development or signed releases)
 
 To use a specific release, check out its tag after cloning (for example `git checkout v1.1.0`), and verify the tag's signature first, as described in [Verifying a release](README.md#verifying-a-release):
 

@@ -19,18 +19,25 @@ import { safePathJoin } from './pathSanitizer.js';
 
 /**
  * Detects the delivery method by checking for git repository markers.
- * If `.git/` exists in the source path, the delivery method is `git_repo`.
- * Otherwise, it is `bundled`.
+ * The source is `git_repo` when `.git` is a directory (a normal clone) or a
+ * `gitdir:` file (a git worktree, or LaunchBridge checked out as a submodule).
+ * Otherwise, for example the package `npm install -g` installs, it is `bundled`.
  *
  * @param {string} sourcePath - Path to the LaunchBridge source
  * @returns {Promise<DeliveryMethod>}
  */
 export async function detectDeliveryMethod(sourcePath) {
-    const gitDir = safePathJoin(sourcePath, '.git');
+    const gitPath = safePathJoin(sourcePath, '.git');
     try {
-        const stat = await fs.stat(gitDir);
+        const stat = await fs.stat(gitPath);
         if (stat.isDirectory()) {
             return 'git_repo';
+        }
+        if (stat.isFile()) {
+            const content = await fs.readFile(gitPath, 'utf-8');
+            if (content.startsWith('gitdir:')) {
+                return 'git_repo';
+            }
         }
         return 'bundled';
     } catch {
