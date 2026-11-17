@@ -82,41 +82,6 @@ global_settings:
         the indexing script. Fix (2.2.0) blocked as for GHSA-5h93-6whr-6q8j;
         remove on the same re-freeze.
       expiration: "2027-01-31"
-    - rule_id: "GHSA-r4j5-9xpp-3985-tornado"
-      path: "project_dependencies/requirements.lock.txt"
-      reason: >-
-        tornado 6.5.10 (GHSA-r4j5-9xpp-3985 / CVE-2026-115927): an HTTP/1.1
-        server's event loop blocks on chunked bodies made of many tiny chunks.
-        tornado is a dependency of IRIS (the lock records it "via iris");
-        LaunchBridge starts no tornado or streamlit server. 6.6 fixes it and IRIS allows it, but
-        reaching it re-resolves every PyPI pin (freeze_deps.py), so it waits for
-        the next dependency re-freeze. Remove then.
-      expiration: "2026-12-31"
-    - rule_id: "GHSA-pcg2-g6cj-q92c-tornado"
-      path: "project_dependencies/requirements.lock.txt"
-      reason: >-
-        tornado 6.5.10 (GHSA-pcg2-g6cj-q92c / CVE-2026-116577): quadratic CPU
-        in an HTTP server's header parser on folded header lines. No tornado
-        server runs in LaunchBridge (see GHSA-r4j5-9xpp-3985); remove on the
-        same re-freeze.
-      expiration: "2026-12-31"
-    - rule_id: "*-pillow"
-      path: "project_dependencies/requirements.lock.txt"
-      reason: >-
-        pillow 12.3.0 image-decoder advisories (41 in Grype on 2026-10-29, among
-        them out-of-bounds reads and denial of service on crafted images; all
-        fixed in 13.0.0 and none in a 12.x release). Pillow decodes images in two places: project artifacts (PDF,
-        PPTX, images) during optional artifact indexing, and images named in
-        predictions in evaluate-predictions with the eval_toolkit_media extra.
-        Both can come from customers or third parties. 13.0.0 cannot be
-        installed: strands-agents-tools 0.8.9 (pinned; 0.8.10, the latest, too)
-        and streamlit, both required by IRIS, require pillow<13. Accepted residual; the README and
-        release notes tell users not to index or evaluate untrusted files until it
-        is updated. Covers every pillow advisory against the lock because no fixed
-        version is installable whatever the advisory; the short expiry forces a
-        review. Remove once strands-agents-tools and streamlit allow 13 and the lock is
-        re-frozen.
-      expiration: "2026-12-31"
 
     # === Test suite ===
     - rule_id: "B101"
