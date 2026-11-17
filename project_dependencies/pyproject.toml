@@ -44,8 +44,10 @@ eval_toolkit = [
 eval_toolkit_media = [
     # Image data type — image_data.py
     "pillow>=10",
-    # Video data type — video_data.py
-    "opencv-python>=4.8",
+    # Video data type — video_data.py. <5.1: opencv-python 5.1.0.95 ships
+    # Windows wheels only (no macOS or Linux wheels, no sdist), so pip can't
+    # install it there. Lift the cap once a 5.1 release has wheels for all three.
+    "opencv-python>=4.8,<5.1",
     # Audio data type — audio_data.py
     "soundfile>=0.12",
 ]
