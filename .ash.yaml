@@ -45,10 +45,10 @@ global_settings:
         mcp 2.1.1 (GHSA-84m7-p3x7-pcfv / CVE-2026-59951) affects only stateful
         Streamable HTTP servers; every MCP server LaunchBridge registers runs over
         stdio, which the advisory excludes. Neither fixed line can be installed:
-        awslabs-aws-documentation-mcp-server 1.2.2 requires mcp>=2.0, which rules
-        out 1.30.0, and IRIS c2f9b59 and strands-agents 1.60.0 (the pinned
-        versions) require mcp<2.2, which rules out 2.2.0. Remove once IRIS and
-        strands-agents allow mcp>=2.2.0 and the lock is re-frozen.
+        awslabs-aws-documentation-mcp-server 1.2.5 requires mcp>=2.1, which rules
+        out 1.30.0, and IRIS c2f9b59 (the pinned commit) requires mcp<2.2, which
+        rules out 2.2.0. Remove once IRIS allows mcp>=2.2.0 and the lock is
+        re-frozen.
       expiration: "2027-01-31"
     - rule_id: "GHSA-5h93-6whr-6q8j-mcp"
       path: "project_dependencies/requirements.lock.txt"
@@ -59,9 +59,9 @@ global_settings:
         never uses the SDK's HTTP client transports or OAuth providers: every
         MCP server it registers runs over stdio, and the launcher refuses an
         IRIS config with mcp_servers (the only way IRIS would connect to one).
-        The fix (2.2.0) is blocked by the same pins as GHSA-84m7-p3x7-pcfv
-        (IRIS c2f9b59 and strands-agents 1.60.0 require mcp<2.2). Remove once
-        they allow 2.2.0 and the lock is re-frozen.
+        The fix (2.2.0) is blocked by the same pin as GHSA-84m7-p3x7-pcfv
+        (IRIS c2f9b59 requires mcp<2.2). Remove once it allows 2.2.0 and the
+        lock is re-frozen.
       expiration: "2027-01-31"
     - rule_id: "GHSA-w4fh-qvv9-3v23-mcp"
       path: "project_dependencies/requirements.lock.txt"

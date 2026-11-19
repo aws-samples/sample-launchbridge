@@ -1,21 +1,27 @@
-1.1.0   # Release version: the installer reads this first token. Set it with package.json and both lockfiles (see RELEASING.md).
+1.2.0   # Release version: the installer reads this first token. Set it with package.json and package-lock.json (see RELEASING.md).
 
-Release Notes - first public release
+Release Notes - 1.2.0
 
 Summary
 LaunchBridge is a set of AI coding agent skills, plus a CLI installer, that gives an agent working on a codebase persistent context, guardrails and tooling: codebase and artifact Q&A, governance files, a config and prompt registry, tests, prediction runs and evaluation, data preparation, and cost and latency reporting. It runs on the developer's workstation under the developer's own AWS credentials and calls Amazon Bedrock in that account. It is sample code for proof-of-concept and non-production use.
+
+What's New
+- Install with npm: `npm install -g github:aws-samples/sample-launchbridge` installs the launchbridge command. Its first run clones LaunchBridge into ~/.launchbridge, and every run installs from that clone, so symlink installs in every project share one copy and one `launchbridge update` updates them all. Installing from a clone with `npm run setup` remains for development and signed releases
+- More AI skill bundles: the ai-skills library moves from v0.3.4 to v0.6.2, adding AI Architecture Decisions, AI Agent Context, AI Development Process, AI Prose Documents and AI Software Documentation alongside AI Spec-Driven Development
+- `launchbridge update` reinstalls the CLI's npm packages (npm ci) when an update changes them, so an update that moves a dependency no longer leaves the CLI unable to start
+- Symlink installs work when LaunchBridge is a git worktree or a submodule checkout
+- Updated dependencies: inquirer 14 and chalk 6 in the installer; in the Python dependency set, Pillow 13.0.0, soupsieve 4.1.1, opentelemetry 1.45.2, tornado 6.6.1 and 52 other pins, which clears the Pillow and tornado advisories listed for 1.1.0. opencv-python stays below 5.1, whose first release ships Windows wheels only
 
 Skills
 - indexing-and-qa, code-guardrails, config-prompt-registry, testing-framework, data-wrangler, generate-predictions, evaluate-predictions, comparative-metric-analysis, operational-metrics, feature-recommendations, and lb-setup (setup and integrity checks)
 - Optional AI skill bundles from aws-samples/sample-ai-skills (pinned at v0.6.2), one per domain: AI Spec-Driven Development (with the ai-workflow orchestrator), AI Architecture Decisions, AI Agent Context, AI Development Process, AI Prose Documents and AI Software Documentation; the release domain is not offered. On first use, the AI Prose Documents export skills fetch a Python 3.14 interpreter and pinned packages through uv, and ai-human-pdf fetches a pinned Mermaid renderer through npx when node is installed
 
 Known Dependency Advisories (not yet fixed)
-- Pillow 12.3.0 (41 advisories in Grype's database on 2026-10-29, all fixed only in Pillow 13.0.0): LaunchBridge's one frozen dependency set pins 12.3.0 because strands-agents-tools and streamlit, which IRIS (indexing-and-qa) requires, don't allow Pillow 13 yet; installs without indexing-and-qa get the same pin. Reachable: Pillow decodes images inside indexed project artifacts and in media evaluated by evaluate-predictions, where a crafted image can cause out-of-bounds reads or a denial of service. Don't index or evaluate untrusted files until it is updated.
 - Pillow 12.3.0 in the optional ai-human-pdf skill: the lock file that ships with its upstream script pins the same Pillow, which decodes the cover logo a document or the --logo option names. Don't export documents that name an untrusted logo until upstream updates it.
-- mcp 2.1.1: GHSA-84m7-p3x7-pcfv (CVE-2026-59951, stateful Streamable HTTP server sessions), GHSA-5h93-6whr-6q8j (HTTP and SSE client redirects), GHSA-w4fh-qvv9-3v23 (HTTP server bearer-token audience) and GHSA-rwrf-2pqf-9j8j (client $ref fetches in tool output schemas). Not reachable: every MCP server LaunchBridge registers runs over stdio, and the Q&A launcher refuses IRIS's mcp_servers, the only way it would act as an MCP client. The fixed versions (2.2.0, 1.30.0) can't be installed yet because IRIS and strands-agents require mcp<2.2.
-- tornado 6.5.10, a dependency of IRIS: GHSA-r4j5-9xpp-3985 and GHSA-pcg2-g6cj-q92c (HTTP server denial of service) and GHSA-pw9p-v7r6-gx4p (open redirect in RedirectHandler, low). Not reachable: LaunchBridge starts no tornado server. Fixed in 6.6, which IRIS allows; it will be picked up at the next dependency update.
+- mcp 2.1.1: GHSA-84m7-p3x7-pcfv (CVE-2026-59951, stateful Streamable HTTP server sessions), GHSA-5h93-6whr-6q8j (HTTP and SSE client redirects), GHSA-w4fh-qvv9-3v23 (HTTP server bearer-token audience) and GHSA-rwrf-2pqf-9j8j (client $ref fetches in tool output schemas). Not reachable: every MCP server LaunchBridge registers runs over stdio, and the Q&A launcher refuses IRIS's mcp_servers, the only way it would act as an MCP client. The fixed version (2.2.0) can't be installed yet because IRIS requires mcp<2.2.
 
 Upgrade Notes
-- Requires Node.js 22.12 or later and Python 3.12 or later
-- After updating, re-run the launchbridge installer in each project, then lb-setup in your agent: lb-setup builds .venv_lb only from dependency files the installer recorded on this machine, and rebuilds a .venv_lb it didn't record
+- Requires Node.js 22.13 or later (^22.13.0 or >=23.5.0), npm, git and Python 3.12 or later
+- Upgrading a clone from 1.1.0: the CLI's npm packages moved from install_script/ to the repository root, and 1.1.0's updater doesn't reinstall them. After `launchbridge update`, `git pull` or checking out v1.2.0, run `npm run setup` once in the clone; launchbridge can't start until you do. Later updates reinstall changed packages themselves
+- After updating, re-run the launchbridge installer in each project, then lb-setup in your agent: the Python dependency set changed, and lb-setup builds .venv_lb only from dependency files the installer recorded on this machine, and rebuilds a .venv_lb it didn't record
 - LaunchBridge deploys no infrastructure; explicitly invoked AWS and Bedrock workflows may incur charges
