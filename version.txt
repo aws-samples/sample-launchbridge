@@ -1,4 +1,31 @@
-1.2.0   # Release version: the installer reads this first token. Set it with package.json and package-lock.json (see RELEASING.md).
+1.3.0   # Release version: the installer reads this first token. Set it with package.json and package-lock.json (see RELEASING.md).
+
+Release Notes - 1.3.0
+
+Summary
+LaunchBridge is a set of AI coding agent skills, plus a CLI installer, that gives an agent working on a codebase persistent context, guardrails and tooling: codebase and artifact Q&A, governance files, a config and prompt registry, tests, prediction runs and evaluation, data preparation, and cost and latency reporting. It runs on the developer's workstation under the developer's own AWS credentials and calls Amazon Bedrock in that account. It is sample code for proof-of-concept and non-production use. 1.3.0 adds a global install, which puts the skills in each agent's user-level skills folder once for every project, and makes symlink installs link whole skill folders, which Codex needs.
+
+What's New
+- Global install: after the agents, the installer asks whether to install globally (the default) or into the current repository. A global install puts the skills in each agent's user-level skills folder (~/.claude/skills, ~/.kiro/skills, ~/.cline/skills, ~/.roo/skills, and ~/.agents/skills for Codex, Pi and other agents) and changes no repository. The first time lb-setup runs in a repository it checks that the folder is safe to prepare, then creates .lb_workspace/, .project_artifacts/, AGENTS.md (or AGENTS_LB.md to merge) and CLAUDE.md there from files the installer generated for it, and builds .venv_lb as before
+- --scope global|local skips the new prompt. --yes without --scope installs globally; scripts that relied on a local install pass --scope local
+- The global install record (version, agents, method, selected skills, digests) is kept in ~/.config/launchbridge/global/, outside every repository, with the files lb-setup prepares repositories from beside it in generated/ (one copy for every agent). verify_integrity.py --global checks the installed skills and those files against it, and lb-setup runs it on every run
+- launchbridge update, run from any folder, also brings a global install up to date: changed skills are copied again in a copy install (a symlink install's links already show them), lb-setup's generated files are regenerated, and each repository picks up the changes the next time lb-setup runs there
+- In a global install, Codex, Pi and other agents share ~/.agents/skills, which holds one form of each AI skill: Codex's when Codex is selected. The installer says which
+- Symlink installs link each skill folder to its folder in the LaunchBridge clone (a junction on Windows, which needs no Developer Mode) instead of linking each file, so a skill always holds what the clone holds, including files it gains. Codex skips a skill whose SKILL.md alone is a link, so it now sees symlink-installed skills. An AI skill that an agent gets its own SKILL.md for is copied for that agent
+
+Skills
+- Unchanged from 1.2.0: indexing-and-qa, code-guardrails, config-prompt-registry, testing-framework, data-wrangler, generate-predictions, evaluate-predictions, comparative-metric-analysis, operational-metrics, feature-recommendations, and lb-setup (setup and integrity checks)
+- Optional AI skill bundles from aws-samples/sample-ai-skills (pinned at v0.6.2), one per domain: AI Spec-Driven Development (with the ai-workflow orchestrator), AI Architecture Decisions, AI Agent Context, AI Development Process, AI Prose Documents and AI Software Documentation; the release domain is not offered
+
+Known Dependency Advisories (not yet fixed)
+- The Python dependency set and the ai-skills pin are unchanged from 1.2.0, so its two advisories still apply: Pillow 12.3.0 in the optional ai-human-pdf skill (don't export documents that name an untrusted logo), and mcp 2.1.1 (GHSA-84m7-p3x7-pcfv, GHSA-5h93-6whr-6q8j, GHSA-w4fh-qvv9-3v23, GHSA-rwrf-2pqf-9j8j; not reachable, since every MCP server LaunchBridge registers runs over stdio and the Q&A launcher refuses IRIS's mcp_servers). See the 1.2.0 notes below for details
+
+Upgrade Notes
+- Requires Node.js 22.13 or later (^22.13.0 or >=23.5.0), npm, git and Python 3.12 or later
+- Projects with a 1.2.0 local symlink install: after `launchbridge update`, run `launchbridge --scope local` again in each one before running lb-setup there. The update is run by 1.2.0's updater, which doesn't link files a skill gained, so lb-setup's new scripts/bootstrap_workspace.py is missing until the installer links the skill folder; lb-setup checks for it first and, until then, stops and says to re-run the installer. Copy installs are copied again by the update and need nothing more
+- The next launchbridge run replaces each skill folder an older symlink install made of per-file links with a link to the folder (or, for an AI skill an agent has its own SKILL.md for, a copy), without asking; launchbridge update does it for the native skills
+- Local installs work as before. A repository can have a local install while a global one exists; where both exist, Claude Code runs the global skills and Kiro and Roo Code run the local ones
+- LaunchBridge deploys no infrastructure; explicitly invoked AWS and Bedrock workflows may incur charges
 
 Release Notes - 1.2.0
 

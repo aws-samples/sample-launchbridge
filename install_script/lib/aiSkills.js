@@ -45,8 +45,8 @@ import path from 'path';
 import { safePathJoin, sanitizePathComponent } from './pathSanitizer.js';
 import { discoverSkills, validateSkillStructure } from './skillDiscovery.js';
 import { computeContentHash } from './contentHash.js';
-import { copySkill, createSymlink } from './installer.js';
-import { AGENTS } from './agentConfig.js';
+import { copySkill, createSymlink, skillLayout } from './installer.js';
+import { AGENTS, getSkillsDir } from './agentConfig.js';
 
 /** Path to the ai-skills submodule, relative to the LaunchBridge source root. */
 export const AI_SUBMODULE_REL = path.join('project_dependencies', 'ai-skills');
@@ -473,25 +473,65 @@ function adaptSkillMd(source, name, skillPath, catalogNames) {
 }
 
 /**
+ * The skills directory an agent uses for a scope, or undefined for an unknown
+ * agent.
+ * @param {string} agent
+ * @param {import('./agentConfig.js').Scope} scope
+ * @returns {string|undefined}
+ */
+function skillsDirFor(agent, scope) {
+    return Object.hasOwn(AGENTS, agent)
+        ? getSkillsDir(agent, scope)
+        : undefined;
+}
+
+/**
  * The agent whose copy an agent's skills directory holds. Two agents can share
- * a directory (pi and "other" both use .agents/skills), and it holds one copy:
- * that of the first selected agent sharing it, in agentConfig order, so pi's
- * when pi is selected. Agents without an adapter get the "other" copy.
+ * a directory (pi and "other" both use .agents/skills; in a global install
+ * Codex uses ~/.agents/skills too), and it holds one copy: that of the first
+ * selected agent sharing it, in agentConfig order, so pi's over other's, and
+ * Codex's over pi's in a global install. Agents without an adapter get the
+ * "other" copy.
  *
  * @param {string} agent - Agent name
  * @param {string[]} agents - Every selected agent
+ * @param {import('./agentConfig.js').Scope} [scope] - Which skills directories to compare
  * @returns {string} 'claude', or an AGENT_ADAPTERS id
  */
-function copyFor(agent, agents) {
-    const dir = AGENTS[agent]?.skillsDir;
+export function copyFor(agent, agents, scope = 'local') {
+    const dir = skillsDirFor(agent, scope);
     const owner =
         Object.keys(AGENTS).find(
-            (name) => agents.includes(name) && AGENTS[name].skillsDir === dir
+            (name) => agents.includes(name) && skillsDirFor(name, scope) === dir
         ) ?? agent;
     if (owner === CLAUDE_AGENT) {
         return CLAUDE_AGENT;
     }
     return Object.hasOwn(AGENT_ADAPTERS, owner) ? owner : 'other';
+}
+
+/**
+ * Skills directories that more than one selected agent uses for this scope,
+ * each with the agent whose copy of the AI skills it holds (see copyFor) and
+ * the other agents that will read that copy.
+ *
+ * @param {string[]} agents - Every selected agent
+ * @param {import('./agentConfig.js').Scope} [scope]
+ * @returns {Array<{ dir: string, owner: string, others: string[] }>}
+ *   `dir` is relative to the project root or the home directory
+ */
+export function sharedSkillsDirectories(agents, scope = 'local') {
+    /** @type {Map<string, string[]>} */
+    const byDir = new Map();
+    for (const name of Object.keys(AGENTS)) {
+        if (!agents.includes(name)) continue;
+        const dir = skillsDirFor(name, scope);
+        if (!byDir.has(dir)) byDir.set(dir, []);
+        byDir.get(dir).push(name);
+    }
+    return [...byDir]
+        .filter(([, sharers]) => sharers.length > 1)
+        .map(([dir, [owner, ...others]]) => ({ dir, owner, others }));
 }
 
 /**
@@ -965,7 +1005,9 @@ export async function computeAiGroupHashes(
  * @param {string[]} selectedSkills - Actual selected skill names
  * @param {AiSkill[]} aiSkills - Discovered AI skills (provides source paths)
  * @param {string[]} agents - Agent names the skills are installed for
- * @param {{ allowedRoot?: string }} [options] - Passed to the content hash
+ * @param {{ allowedRoot?: string, scope?: import('./agentConfig.js').Scope }} [options]
+ *   `allowedRoot` is passed to the content hash; `scope` decides which agents
+ *   share a skills directory (default `local`)
  * @returns {Promise<Record<string, string>>} Map of `<agent>/<skillName>` → hash
  */
 export async function computeAiSkillFolderHashes(
@@ -974,14 +1016,21 @@ export async function computeAiSkillFolderHashes(
     agents,
     options = {}
 ) {
-    const hashed = await hashAiSkillFolders(selectedSkills, aiSkills, options);
+    const { scope = 'local', ...hashOptions } = options;
+    const hashed = await hashAiSkillFolders(
+        selectedSkills,
+        aiSkills,
+        hashOptions
+    );
 
     /** @type {Record<string, string>} */
     const result = {};
     for (const entries of hashed.values()) {
         for (const { name, hashes } of entries) {
             for (const agent of agents) {
-                result[`${agent}/${name}`] = hashes.get(copyFor(agent, agents));
+                result[`${agent}/${name}`] = hashes.get(
+                    copyFor(agent, agents, scope)
+                );
             }
         }
     }
@@ -990,22 +1039,50 @@ export async function computeAiSkillFolderHashes(
 }
 
 /**
+ * The files the installer writes itself into an agent's copy of an AI skill
+ * (its SKILL.md, and Codex's agents/openai.yaml), by POSIX relative path, or
+ * undefined for Claude Code, which gets the source files unchanged.
+ *
+ * @param {AiSkill} skill
+ * @param {string} agent
+ * @param {string[]} agents - Every selected agent (decides a shared directory's copy)
+ * @param {import('./agentConfig.js').Scope} [scope]
+ * @returns {Map<string, Buffer> | undefined}
+ */
+export function agentFilesFor(skill, agent, agents, scope = 'local') {
+    return skill.variants.get(copyFor(agent, agents, scope));
+}
+
+/**
  * Writes the agent's own files into an installed AI skill directory: for
  * every agent but Claude Code, its SKILL.md and, for Codex and an
- * explicit-only skill, `agents/openai.yaml`. An installed file (a copy, or in
- * a symlink install a link into the submodule) is removed first and never
- * written through, so the submodule's own files are left unchanged.
+ * explicit-only skill, `agents/openai.yaml`. Those agents' copies are always
+ * copies (installer.js skillLayout); a skill folder that is a link is refused,
+ * since writing into it would change the submodule. An installed file is
+ * removed first and never written through.
  *
  * @param {AiSkill} skill
  * @param {string} agent - Agent name
  * @param {string} targetDir - The installed skill directory
  * @param {string[]} agents - Every selected agent (decides a shared directory's copy)
+ * @param {import('./agentConfig.js').Scope} [scope] - The install scope (default `local`)
  * @returns {Promise<void>}
  */
-export async function writeAgentFiles(skill, agent, targetDir, agents) {
-    const files = skill.variants.get(copyFor(agent, agents));
+export async function writeAgentFiles(
+    skill,
+    agent,
+    targetDir,
+    agents,
+    scope = 'local'
+) {
+    const files = agentFilesFor(skill, agent, agents, scope);
     if (!files) {
         return;
+    }
+    if ((await fsp.lstat(targetDir)).isSymbolicLink()) {
+        throw new Error(
+            `${targetDir} is a link to the AI skill's source; the files ${agent} reads would be written into it`
+        );
     }
     for (const [relPath, bytes] of files) {
         const parts = relPath.split('/');
@@ -1051,14 +1128,23 @@ async function removePathRecursive(p) {
  * with the agent's own files.
  *
  * @param {string} sourcePath - LaunchBridge source root
- * @param {string} targetRepo - Target repository root
+ * @param {string} targetRepo - Target repository root; for a global install,
+ *   the home directory the manifest's installedTargets are relative to
  * @param {object} manifest - Existing version manifest (provides group hashes, agents, method)
  * @param {{ muted: Function, success: Function, warn: Function }} ui
+ * @param {{ scope?: import('./agentConfig.js').Scope }} [options] - `global`
+ *   updates the skills in the agents' user-level folders
  * @returns {Promise<{ updated: string[], newHashes: Record<string, string>,
  *   newFolderHashes: Record<string, string> }>} updated skill names, refreshed
  *   group hashes, and refreshed per-agent digests (all merged into the manifest)
  */
-export async function updateAiSkills(sourcePath, targetRepo, manifest, ui) {
+export async function updateAiSkills(
+    sourcePath,
+    targetRepo,
+    manifest,
+    ui,
+    { scope = 'local' } = {}
+) {
     const { muted, success, warn } = ui;
     const aiSkills = discoverAiSkills(sourcePath, {
         nativeNames: new Set(discoverSkills(sourcePath).map((s) => s.name)),
@@ -1072,11 +1158,19 @@ export async function updateAiSkills(sourcePath, targetRepo, manifest, ui) {
     const agents = Array.isArray(manifest.agents) ? manifest.agents : [];
     const oldHashes = manifest.skillHashes || {};
 
-    const { getTargetPath, checkSkillsDirectory } =
+    const { getTargetPath, checkSkillsDirectory, checkGlobalSkillsDirectory } =
         await import('./pathValidator.js');
     const { readInstalledTargets, namesUnder } =
         await import('./installedTargets.js');
     const installedTargets = readInstalledTargets(manifest);
+    const checkDirectory = (dir) =>
+        scope === 'global'
+            ? checkGlobalSkillsDirectory(dir, { sourcePath, home: targetRepo })
+            : checkSkillsDirectory(dir, targetRepo);
+    const skillsDirOf = (agent) =>
+        scope === 'global'
+            ? safePathJoin(targetRepo, getSkillsDir(agent, 'global'))
+            : getTargetPath(agent, 'local', targetRepo);
 
     // Scan each agent's target dir for installed AI skills. When the manifest
     // records which directories LaunchBridge installed, only those count; a
@@ -1086,11 +1180,11 @@ export async function updateAiSkills(sourcePath, targetRepo, manifest, ui) {
     for (const agent of agents) {
         let base;
         try {
-            base = getTargetPath(agent, 'local', targetRepo);
+            base = skillsDirOf(agent);
         } catch {
             continue;
         }
-        const dirCheck = await checkSkillsDirectory(base, targetRepo);
+        const dirCheck = await checkDirectory(base);
         if (!dirCheck.ok) {
             warn(`  Skipped AI skills for ${agent}: ${dirCheck.reason}`);
             continue;
@@ -1131,36 +1225,41 @@ export async function updateAiSkills(sourcePath, targetRepo, manifest, ui) {
         [...allInstalled],
         aiSkills,
         agents,
-        { allowedRoot }
+        { allowedRoot, scope }
     );
     const changedGroups = Object.keys(newHashes).filter(
         (group) => newHashes[group] !== oldHashes[group]
     );
 
-    // A symlink install needs the reinstall as much as a copy: it has links
-    // only for the files a skill had at install time, and every agent but
-    // Claude Code has its own files written in place of links.
+    // Every agent but Claude Code has files of its own in its copy, which is a
+    // copy in a symlink install too (installer.js skillLayout), so a changed
+    // domain is installed again for it. Claude Code's link to the folder is
+    // made again as well, which also replaces an older symlink install's
+    // per-file links.
+    const copy = (src, target) =>
+        copySkill(src, target, {
+            allowedRoot,
+            onSkip: (link, resolved) =>
+                warn(
+                    `  Skipped link outside the LaunchBridge source: ${link} -> ${resolved}`
+                ),
+        });
     const install =
-        installMethod === 'copy'
-            ? (src, target) =>
-                  copySkill(src, target, {
-                      allowedRoot,
-                      onSkip: (link, resolved) =>
-                          warn(
-                              `  Skipped link outside the LaunchBridge source: ${link} -> ${resolved}`
-                          ),
-                  })
-            : installMethod === 'symlink'
-              ? (src, target) => createSymlink(src, target)
-              : null;
+        installMethod === 'copy' || installMethod === 'symlink'
+            ? (src, target, files) =>
+                  skillLayout(installMethod, files) === 'link'
+                      ? createSymlink(src, target)
+                      : copy(src, target)
+            : null;
 
     const updated = [];
 
     if (install && changedGroups.length > 0) {
         const changedSet = new Set(changedGroups);
 
+        const reinstalled = new Set();
         for (const [agent, names] of installedByAgent) {
-            const base = getTargetPath(agent, 'local', targetRepo);
+            const base = skillsDirOf(agent);
             for (const name of names) {
                 if (!changedSet.has(aiTrackingKey(name, aiSkills))) {
                     continue;
@@ -1170,10 +1269,19 @@ export async function updateAiSkills(sourcePath, targetRepo, manifest, ui) {
                     continue;
                 }
                 const target = safePathJoin(base, name);
+                // Agents sharing a skills folder get one copy (copyFor).
+                if (reinstalled.has(target)) {
+                    continue;
+                }
+                reinstalled.add(target);
                 try {
                     await removePathRecursive(target);
-                    await install(skill.path, target);
-                    await writeAgentFiles(skill, agent, target, agents);
+                    await install(
+                        skill.path,
+                        target,
+                        agentFilesFor(skill, agent, agents, scope)
+                    );
+                    await writeAgentFiles(skill, agent, target, agents, scope);
                     muted(`  Updated AI skill: ${name} (${agent})`);
                     if (!updated.includes(name)) {
                         updated.push(name);

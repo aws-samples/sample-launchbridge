@@ -7,8 +7,10 @@
  * version. If a version_manifest.json exists in the target repository, it
  * also handles post-pull skill synchronisation:
  *
- *  - symlink installs: skills are updated automatically by the git pull;
- *    only pyproject.toml is regenerated if dependencies changed.
+ *  - symlink installs: each skill folder is a link to the source, so the git
+ *    pull updates it; a folder an older install made of per-file links is
+ *    linked again as a whole, and pyproject.toml is regenerated if
+ *    dependencies changed.
  *  - copy installs: skills whose content hash changed are re-copied from
  *    the updated source, then pyproject.toml is regenerated if needed.
  *
@@ -623,7 +625,7 @@ export async function copyDirRecursive(source, target, options = {}) {
  * @param {Record<string, string>} refreshed
  * @returns {Record<string, string>|undefined}
  */
-function mergeExternalFolderHashes(existing, refreshed) {
+export function mergeExternalFolderHashes(existing, refreshed) {
     const merged = { ...(existing || {}) };
     for (const key of Object.keys(refreshed)) {
         delete merged[`shared/${key.slice(key.indexOf('/') + 1)}`];
@@ -644,12 +646,73 @@ function mergeExternalFolderHashes(existing, refreshed) {
  * @param {Record<string, string>} refreshedHashes
  * @returns {string[]|undefined}
  */
-function mergeExternalManifestKeys(existing, refreshedHashes) {
+export function mergeExternalManifestKeys(existing, refreshedHashes) {
     const merged = new Set([
         ...(Array.isArray(existing) ? existing : []),
         ...Object.keys(refreshedHashes),
     ]);
     return merged.size > 0 ? [...merged].sort() : undefined;
+}
+
+/**
+ * Replaces each recorded skill folder of a local symlink install that an
+ * older LaunchBridge made of one link per file with a link to its folder.
+ *
+ * @param {string} targetRepo
+ * @param {object} manifest - The repository's version manifest
+ * @param {string[]} agents
+ * @param {string[]} skillNames - Native skills with a source folder
+ * @param {Record<string, string>} skillPathMap - Skill name → source folder
+ * @param {{ muted: Function, warn: Function }} ui
+ * @returns {Promise<string[]>} The skills linked again
+ */
+async function relinkPerFileSkills(
+    targetRepo,
+    manifest,
+    agents,
+    skillNames,
+    skillPathMap,
+    { muted, warn }
+) {
+    const { getTargetPath, checkSkillsDirectory } =
+        await import('./pathValidator.js');
+    const { targetKey, readInstalledTargets } =
+        await import('./installedTargets.js');
+    const { installedLayout } = await import('./installedContent.js');
+    const { createSymlink } = await import('./installer.js');
+    const installedTargets = readInstalledTargets(manifest);
+    const relinked = [];
+    for (const agent of agents) {
+        let base;
+        try {
+            base = getTargetPath(agent, 'local', targetRepo);
+        } catch {
+            continue;
+        }
+        if (!(await checkSkillsDirectory(base, targetRepo)).ok) continue;
+        for (const skillName of skillNames) {
+            const target = safePathJoin(base, skillName);
+            if (!validatePathWithinBase(target, base).valid) continue;
+            if (
+                installedTargets &&
+                !installedTargets.has(targetKey(targetRepo, target))
+            ) {
+                continue;
+            }
+            if ((await installedLayout(target)) !== 'per-file') continue;
+            try {
+                await removePath(target);
+                await createSymlink(skillPathMap[skillName], target);
+                muted(`  Linked ${skillName} (${agent}) to its source folder.`);
+                relinked.push(skillName);
+            } catch (err) {
+                warn(
+                    `  Could not link ${skillName} for ${agent} to its source folder: ${err.message}`
+                );
+            }
+        }
+    }
+    return relinked;
 }
 
 /**
@@ -800,7 +863,17 @@ export async function runPostPullSync(sourcePath, targetRepo, ui) {
             );
         }
     } else if (installMethod === 'symlink') {
-        // Symlinks already point at the updated source — nothing to copy.
+        // Each skill folder is a link to the updated source — nothing to copy.
+        // A folder an older install made, of one link per file, is linked
+        // again as a whole: it has no link for a file the skill gained.
+        await relinkPerFileSkills(
+            targetRepo,
+            manifest,
+            agents,
+            skillNames.filter((name) => skillPathMap[name]),
+            skillPathMap,
+            { muted, warn }
+        );
         if (changedSkills.length > 0) {
             muted(
                 `  ${changedSkills.length} skill(s) updated automatically via symlinks.`

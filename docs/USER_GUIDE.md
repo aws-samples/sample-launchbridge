@@ -13,6 +13,7 @@ This guide covers every skill in the LaunchBridge suite — what it does, how to
 
 1. [Overview](#overview)
 2. [Post-Installation Configuration](#post-installation-configuration)
+   - [Global or Local Install](#global-or-local-install)
    - [Updating LaunchBridge](#updating-launchbridge)
    - [Changing Skills or Agents](#changing-skills-or-agents)
    - [Platform Support](#platform-support)
@@ -72,6 +73,39 @@ Skills:
 ## Post-Installation Configuration
 
 This section covers what to verify and configure after running the `launchbridge` CLI installer. For system requirements and installation steps, see [README.md](../README.md).
+
+### Global or Local Install
+
+After you select the agents, the installer asks where to install the skills:
+
+- **Global** (the default) puts the skills in each agent's user-level skills folder, where the agent finds them in every project. The folder you run `launchbridge` from is not changed, so you can run it from anywhere. The first time you run `lb-setup` in a project, it creates `.lb_workspace/` and `.venv_lb` there, after checking that the folder is safe to prepare.
+- **Local** puts the skills in the current repository's agent folders and creates `.lb_workspace/` there straight away, as earlier versions did. Choose it when the repository should carry its own skills, for example a delivered codebase that the client keeps using.
+
+| Agent       | Global skills folder | Local skills folder |
+| ----------- | -------------------- | ------------------- |
+| Claude Code | `~/.claude/skills/`  | `.claude/skills/`   |
+| Kiro        | `~/.kiro/skills/`    | `.kiro/skills/`     |
+| Cline       | `~/.cline/skills/`   | `.cline/skills/`    |
+| Roo Code    | `~/.roo/skills/`     | `.roo/skills/`      |
+| Codex       | `~/.agents/skills/`  | `.codex/skills/`    |
+| Pi          | `~/.agents/skills/`  | `.agents/skills/`   |
+| Other       | `~/.agents/skills/`  | `.agents/skills/`   |
+
+On Windows, `~` is your user profile folder (`%USERPROFILE%`). Codex reads user-level skills from `~/.agents/skills/`, not `~/.codex/skills/`.
+
+**What a global install writes.** The installer writes only outside your repositories:
+
+- the skills, in the folders above: copies, or in a symlink install a link from each skill folder to its folder in the LaunchBridge clone (an AI skill is copied for any agent that gets its own `SKILL.md` for it);
+- the global install record (version, agents, method, selected skills and every digest) in `~/.config/launchbridge/global/`, or under `$XDG_CONFIG_HOME` when that is an absolute path;
+- beside the record, in `generated/`, the files `lb-setup` prepares each project from: the Python dependency files for the skills you selected (`python_deps/pyproject.toml` and `constraints.txt`), a `setup_status.md` template, the list of workspace folders, and a copy of the LaunchBridge `AGENTS.md` reference. They depend only on the skills you selected, so every agent's `lb-setup` uses this one copy.
+
+When `lb-setup` first runs in a project, its `bootstrap_workspace.py` refuses the home folder, a folder above it, the file system root, the LaunchBridge source and the skills folders themselves. It also refuses any LaunchBridge path reached through a symbolic link, and any file git tracks where LaunchBridge runs from. It checks the generated files against the global record, then creates `.lb_workspace/` (with `setup_status.md`, `config/python_deps/` and `config/lb_agents_reference.md`), `.project_artifacts/`, `AGENTS.md` (or, beside an existing one, `.lb_workspace/steering/AGENTS_LB.md` to merge) and `@AGENTS.md` in `CLAUDE.md`. It never writes through a linked `AGENTS.md` or `CLAUDE.md`. Then setup continues as for a local install: `lb-setup` builds and seals `.venv_lb`, configures the MCP servers, and so on.
+
+**Shared `~/.agents/skills/`.** In a global install, Codex, Pi and other agents share one folder, which holds one copy of each AI skill. That copy is the form of the first of them you select, in the order Codex, Pi, Other, and the installer warns which form the others read. Native LaunchBridge skills are the same for every agent.
+
+**Both installs in one repository.** A repository can have a local install while you also have a global one; LaunchBridge warns but leaves the choice to you. Where both exist, Claude Code runs the global (personal) skills, and Kiro and Roo Code run the repository's own. Keep one of them for that repository.
+
+**Integrity.** For a global install, `verify_integrity.py --global "<project>"` checks the skills in your home folders and lb-setup's generated files against the global record; `lb-setup` runs it on every run. There is no `skill_digests.json` to commit for a global install: the record changes only through `launchbridge` and `launchbridge update`.
 
 ### AWS Credentials at Runtime
 
@@ -194,9 +228,9 @@ trust_level = "untrusted"
 
 Marking the project untrusted (and leaving `approval_policy` unset) makes every command ask; `approval_policy = "on-request"` instead lets commands the sandbox allows run without asking. Avoid `--yolo` / `--dangerously-bypass-approvals-and-sandbox`, `--sandbox danger-full-access` and `-a never`. See the [Codex approvals and security](https://learn.chatgpt.com/docs/agent-approvals-security) documentation.
 
-**Cline** — in the auto-approve settings, leave every *Edit*, *Execute*, *Use the browser* and *Use MCP servers* toggle off, and leave *Read all files* off so files outside the workspace need approval. Keep *YOLO Mode* (Settings → Features) unchecked, and `"autoApprove": []` for each server in `cline_mcp_settings.json`. Cline has no sandbox. See [Cline auto-approve](https://docs.cline.bot/features/auto-approve).
+**Cline** — in the auto-approve settings, leave every _Edit_, _Execute_, _Use the browser_ and _Use MCP servers_ toggle off, and leave _Read all files_ off so files outside the workspace need approval. Keep _YOLO Mode_ (Settings → Features) unchecked, and `"autoApprove": []` for each server in `cline_mcp_settings.json`. Cline has no sandbox. See [Cline auto-approve](https://docs.cline.bot/features/auto-approve).
 
-**Roo Code** — turn auto-approve off (the *Enabled* toggle in the auto-approve menu by the chat input, or *None*), keep `roo-cline.allowedCommands` empty, and keep `"alwaysAllow": []` for each MCP server. Roo Code has no sandbox. See [Roo Code auto-approving actions](https://roocodeinc.github.io/Roo-Code/features/auto-approving-actions).
+**Roo Code** — turn auto-approve off (the _Enabled_ toggle in the auto-approve menu by the chat input, or _None_), keep `roo-cline.allowedCommands` empty, and keep `"alwaysAllow": []` for each MCP server. Roo Code has no sandbox. See [Roo Code auto-approving actions](https://roocodeinc.github.io/Roo-Code/features/auto-approving-actions).
 
 **Pi** — Pi does not ask before tool calls and has no built-in sandbox. Approval comes from an extension that gates tool calls (see `examples/extensions/permission-gate.ts` and the tool-call gate in the extensions documentation of the [Pi repository](https://github.com/earendil-works/pi)), and isolation from its sandbox extension or from running Pi in a container. Without those, Pi is not suitable for an untrusted repository.
 
@@ -229,32 +263,42 @@ Both servers run on your machine as your user, over stdio, without a sandbox: th
 The `launchbridge` installer supports CLI flags for scripted or non-interactive use:
 
 ```bash
-launchbridge --skills all --agent kiro --method copy --yes
+launchbridge --scope global --skills all --agent kiro --method copy --yes
 ```
 
-| Flag | Effect |
-| ---- | ------ |
-| `--skills <list>` | Comma-separated skill names, category names, or `all` — skips skill selection prompt |
-| `--agent <list>` | Comma-separated agent names (e.g., `kiro`, `claude`) — skips agent selection prompt |
-| `--method copy\|symlink` | Skips method selection prompt |
-| `--yes` / `-y` | Auto-confirm everything. Replaces skills LaunchBridge installed before; an existing directory it did not install is left unchanged and reported. Skills no longer selected are listed but never removed; run interactively to remove them |
+| Flag                     | Effect                                                                                                                                                                                                                                    |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--skills <list>`        | Comma-separated skill names, category names, or `all` — skips skill selection prompt                                                                                                                                                      |
+| `--agent <list>`         | Comma-separated agent names (e.g., `kiro`, `claude`) — skips agent selection prompt                                                                                                                                                       |
+| `--scope global\|local`  | Skips the scope prompt (see [Global or Local Install](#global-or-local-install)). Without it, `--yes` installs globally, the prompt's default; pass `--scope local` to install into the current repository as earlier versions did        |
+| `--method copy\|symlink` | Skips method selection prompt                                                                                                                                                                                                             |
+| `--yes` / `-y`           | Auto-confirm everything. Replaces skills LaunchBridge installed before; an existing directory it did not install is left unchanged and reported. Skills no longer selected are listed but never removed; run interactively to remove them |
 
 When all flags are provided, the installer runs fully non-interactively. Useful for CI pipelines and scripted setups.
 
 ### Updating LaunchBridge
 
-If LaunchBridge was installed via git clone, you can pull the latest changes and sync your skills in one command. Run this from your **target project folder** (the repo where LaunchBridge is installed):
+If LaunchBridge was installed via git clone, you can pull the latest changes and sync your skills in one command. For a global install, run it from any folder; for a local install, run it from the **target project folder** (the repo where LaunchBridge is installed). It updates both when you have both.
 
 ```bash
 launchbridge update
 ```
 
-This will:
+First, it fetches the latest changes from the LaunchBridge remote repository, shows the incoming commits and what they change (skill instructions, installer files, submodule pointers), and applies them only after you confirm — the prompt defaults to no. For scripted use, review the preview first, then run `launchbridge update --apply <commit>` with the commit it showed; the update is applied only if it still ends there. `--yes` alone does not apply an update. Only a fast-forward is applied; diverged history is refused. The command follows the branch the clone is on; on a checked-out release tag (a detached HEAD) it stops and shows the tag-based steps in [Updating LaunchBridge](../README.md#updating-launchbridge) instead.
 
-1. Fetch the latest changes from the LaunchBridge remote repository, show the incoming commits and what they change (skill instructions, installer files, submodule pointers), and apply them only after you confirm — the prompt defaults to no. For scripted use, review the preview first, then run `launchbridge update --apply <commit>` with the commit it showed; the update is applied only if it still ends there. `--yes` alone does not apply an update. Only a fast-forward is applied; diverged history is refused. The command follows the branch the clone is on; on a checked-out release tag (a detached HEAD) it stops and shows the tag-based steps in [Updating LaunchBridge](../README.md#updating-launchbridge) instead.
-2. Re-copy any skills whose content changed (copy installs only — symlink installs update automatically)
-3. Regenerate the Python dependency config if dependencies changed
-4. Update the version manifest. The tracked digest baseline is left as it was (or created from the pre-update digests), so lb-setup holds back changed skills until you review them and refresh it with `verify_integrity.py --write-baseline`.
+Then, for a global install, it:
+
+1. Installs again every skill whose content changed, in a copy install. In a symlink install each skill folder is a link to the clone, so it already holds the new content; a skill folder an older LaunchBridge made of one link per file is linked again as a whole.
+2. Regenerates the files in `~/.config/launchbridge/global/generated/` (for example when the frozen dependency set changed) and rewrites the global record. The preview you confirmed is the review step: the new record is the baseline from then on.
+3. Leaves your repositories alone. Each one picks up the change the next time `lb-setup` runs in it: the rows of changed skills go back to `not started`, `venv-setup` is reset when the dependencies changed, and the new `AGENTS.md` reference is staged for merging.
+
+Skills that are new in LaunchBridge are not added; re-run `launchbridge` to select them.
+
+For a local install in the current folder, it then:
+
+1. Re-copies any skills whose content changed (copy installs only — a symlink install's skill folders are links to the clone; one an older LaunchBridge made of one link per file is linked again as a whole). If a path it would write in `.lb_workspace/` is a symbolic link, it skips the local install and says so; the global install is still updated.
+2. Regenerates the Python dependency config if dependencies changed.
+3. Updates the version manifest. The tracked digest baseline is left as it was (or created from the pre-update digests), so lb-setup holds back changed skills until you review them and refresh it with `verify_integrity.py --write-baseline`.
 
 The integrity check (`verify_integrity.py`) detects drift after installation; it doesn't authenticate a change. A commit that changes a skill together with `.lb_workspace/config/skill_digests.json` passes it, so review any diff to the baseline, and to the agents' skills folders, as code. Better still, don't commit the skills folders (`.claude/skills/` and the others): whoever controls them controls your agent's instructions.
 
@@ -274,13 +318,15 @@ After updating, run `lb-setup` in your agent to apply any skill changes.
 
 Re-run `launchbridge` in your project and change the selection. The installer compares each skill's content hash with the version manifest (`.lb_workspace/config/version_manifest.json`) and changes only what differs; `setup_status.md` then tells lb-setup what to configure on its next run.
 
-| You select | What happens | Status in `setup_status.md` |
-| --- | --- | --- |
-| A new skill | Installed into each selected agent's skills directory | `not started`; configured on the next lb-setup |
-| An installed skill whose files changed (new LaunchBridge version) | Reinstalled | Reset to `not started`; re-configured on the next lb-setup |
-| An installed skill whose files are unchanged | Skipped | Kept (for example `complete`) |
-| A skill you no longer select | Listed as an orphan. An interactive run asks whether to remove its directory; `--yes` never removes it | `not installed` once removed |
-| The same selection again, nothing changed | "Installation is up to date — no changes needed"; no files touched | Kept |
+For a global install, re-run `launchbridge` from any folder and choose Global: the installer compares against the global record instead, and each repository's `setup_status.md` is updated the next time `lb-setup` runs there (new skills `not started` or `ready`, removed ones `not installed`). The table below describes both; for a global install, read "skills directory" as the global folder in [Global or Local Install](#global-or-local-install).
+
+| You select                                                        | What happens                                                                                           | Status in `setup_status.md`                                |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- |
+| A new skill                                                       | Installed into each selected agent's skills directory                                                  | `not started`; configured on the next lb-setup             |
+| An installed skill whose files changed (new LaunchBridge version) | Reinstalled                                                                                            | Reset to `not started`; re-configured on the next lb-setup |
+| An installed skill whose files are unchanged                      | Skipped                                                                                                | Kept (for example `complete`)                              |
+| A skill you no longer select                                      | Listed as an orphan. An interactive run asks whether to remove its directory; `--yes` never removes it | `not installed` once removed                               |
+| The same selection again, nothing changed                         | "Installation is up to date — no changes needed"; no files touched                                     | Kept                                                       |
 
 Other effects of a re-run:
 
@@ -292,22 +338,23 @@ Other effects of a re-run:
 
 **Agents.** Select every agent you use; skills are installed into each agent's directory and the `.lb_workspace/` state is shared. Deselecting an agent stops managing its directory, but does not delete it or its MCP config; remove those yourself if you no longer need them. lb-setup writes the MCP config for the agent it is running in.
 
-| Agent | Skills directory | MCP config written by lb-setup |
-| --- | --- | --- |
-| Claude Code | `.claude/skills/` | `.mcp.json` |
-| Kiro | `.kiro/skills/` | `.kiro/settings/mcp.json` |
-| Codex | `.codex/skills/` | `.codex/config.toml` and the user-level `~/.codex/config.toml` |
-| Cline | `.cline/skills/` | the VS Code extension's `cline_mcp_settings.json` (OS-specific `globalStorage` path) and `~/.cline/data/settings/cline_mcp_settings.json` |
-| Roo Code | `.roo/skills/` | `.roo/mcp.json` |
-| Pi | `.agents/skills/` | — |
-| Other | `.agents/skills/` | — |
+| Agent       | Skills directory  | MCP config written by lb-setup                                                                                                            |
+| ----------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude Code | `.claude/skills/` | `.mcp.json`                                                                                                                               |
+| Kiro        | `.kiro/skills/`   | `.kiro/settings/mcp.json`                                                                                                                 |
+| Codex       | `.codex/skills/`  | `.codex/config.toml` and the user-level `~/.codex/config.toml`                                                                            |
+| Cline       | `.cline/skills/`  | the VS Code extension's `cline_mcp_settings.json` (OS-specific `globalStorage` path) and `~/.cline/data/settings/cline_mcp_settings.json` |
+| Roo Code    | `.roo/skills/`    | `.roo/mcp.json`                                                                                                                           |
+| Pi          | `.agents/skills/` | —                                                                                                                                         |
+| Other       | `.agents/skills/` | —                                                                                                                                         |
 
 ### Platform Support
 
 The installer is Node.js and works on macOS, Linux and Windows; content hashes use forward-slash paths, so they match across platforms.
 
 - **macOS and Linux:** copy and symlink installs both work.
-- **Windows:** use copy installs. Symlink installs need Developer Mode or an Administrator shell.
+- **Windows:** copy installs work. A symlink install makes each skill folder a junction, which needs neither Developer Mode nor an Administrator shell. A global install goes under `%USERPROFILE%` (for example `%USERPROFILE%\.kiro\skills`), and its record under `%USERPROFILE%\.config\launchbridge\`. lb-setup runs its scripts with `python` there (`python -I "<skills folder>\lb-setup\scripts\bootstrap_workspace.py" init "<project>"`).
+- **Linked skill folders:** a symlink install links each skill folder, never the files in it. Codex skips a skill whose `SKILL.md` alone is a link ([openai/codex#15844](https://github.com/openai/codex/issues/15844)) and loads a linked folder; Claude Code and Kiro IDE 1.4 load linked folders. Older Kiro versions may not ([kirodotdev/Kiro#6401](https://github.com/kirodotdev/Kiro/issues/6401)); use a copy install there. A skill folder an older LaunchBridge made of one link per file is replaced, without asking, by the next `launchbridge` run (and, for the native skills, by `launchbridge update`).
 - **Python:** lb-setup needs [`uv`](https://docs.astral.sh/uv/getting-started/installation/) and asks you to install it if it is missing; `uv` then provides the Python version `requires-python` names, whatever Python the machine has.
 - **EC2, containers and cloud IDEs:** lb-setup detects an instance profile or container role for AWS authentication. Use the non-interactive flags where there is no terminal to prompt on. If the project path changes (a new instance, a different workspace path), lb-setup's path check rewrites path-dependent config and rebuilds `.venv_lb`. LaunchBridge keeps its per-repository records (data-handling confirmations, and the ID that marks `.venv_lb` as the one lb-setup built) in `~/.config/launchbridge/`, or under `$XDG_CONFIG_HOME` when that is an absolute path. Where the home directory doesn't persist but the repository does (a container or a cloud IDE), point `XDG_CONFIG_HOME` at persistent storage outside the repository, or lb-setup rebuilds `.venv_lb` and asks for the confirmations again after each restart.
 
@@ -322,7 +369,7 @@ that path. To work out afterwards what changed and why, use these records:
 | What did the agent do in a session?                       | Your agent's own session history. Claude Code keeps a transcript of every tool call under `~/.claude/projects/`; for other agents, see their documentation                                                                 |
 | What changed in the repository?                           | Git history. Commit agent work in small, reviewed commits so each change is attributable                                                                                                                                   |
 | Did the agent's standing instructions change?             | `.lb_workspace/config/skill_digests.json`, `.lb_workspace/guardrails/` and the config registry are tracked, and `lb-setup` re-checks installed skills on every run                                                         |
-| What repository content was sent for indexing, and where? | `.lb_workspace/indexing_and_qa/transmission_log.jsonl` (local, never committed) and the data-handling confirmation in your LaunchBridge state directory (`~/.config/launchbridge/repos/`, outside the repository)                                                                                     |
+| What repository content was sent for indexing, and where? | `.lb_workspace/indexing_and_qa/transmission_log.jsonl` (local, never committed) and the data-handling confirmation in your LaunchBridge state directory (`~/.config/launchbridge/repos/`, outside the repository)          |
 | What AWS calls were made with the profile?                | AWS CloudTrail in the account, if a trail is enabled. Bedrock model invocation logging can also record prompts and responses, but it stores the content itself, so weigh that against the engagement's data-handling terms |
 
 These records assume a single developer. Everything local is under that
@@ -418,12 +465,12 @@ For artifact questions:
 
 **Outputs (in `.lb_workspace/guardrails/`):**
 
-| File                        | Purpose                                                       |
-| --------------------------- | ------------------------------------------------------------- |
-| `project-context.md`        | Auto-generated architecture overview, tech stack, conventions |
-| `scope.md`                  | Interactively defined boundaries — what's in/out of scope     |
-| `aws-references.md`         | Links to the AWS Well-Architected lenses (on-demand)          |
-| `feature-guide-*.md`        | Per-feature implementation guides                             |
+| File                 | Purpose                                                       |
+| -------------------- | ------------------------------------------------------------- |
+| `project-context.md` | Auto-generated architecture overview, tech stack, conventions |
+| `scope.md`           | Interactively defined boundaries — what's in/out of scope     |
+| `aws-references.md`  | Links to the AWS Well-Architected lenses (on-demand)          |
+| `feature-guide-*.md` | Per-feature implementation guides                             |
 
 **How to invoke:**
 
@@ -678,48 +725,48 @@ The ai-skills give the agent your project's patterns, constraints and convention
 
 The skills are grouped by domain upstream, and each domain LaunchBridge offers is one installer bundle. The library's `release` domain (`ai-scaffold-release`) is not offered; it is available directly from [aws-samples/sample-ai-skills](https://github.com/aws-samples/sample-ai-skills). Domains are independent, and a skill works without the others in its bundle.
 
-| Bundle (`--skills` value) | Installs |
-| ------------------------- | -------- |
+| Bundle (`--skills` value)                                       | Installs                                                                                                           |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | **AI Spec-Driven Development** (`"AI Spec-Driven Development"`) | `ai-create`, `ai-research`, `ai-plan`, `ai-implement`, `ai-archive`, **and** the native `ai-workflow` orchestrator |
-| **AI Architecture Decisions** (`"AI Architecture Decisions"`) | `ai-adr` |
-| **AI Agent Context** (`"AI Agent Context"`) | `ai-agent-context`, `ai-make-skill`, `ai-scaffold-agents-md` |
-| **AI Development Process** (`"AI Development Process"`) | `ai-dev-autopr`, `ai-dev-issue`, `ai-scaffold-dev-context`, `ai-scaffold-dev-templates` |
-| **AI Prose Documents** (`"AI Prose Documents"`) | `ai-human-docx`, `ai-human-draft`, `ai-human-outline`, `ai-human-pdf`, `ai-human-xlsx` |
-| **AI Software Documentation** (`"AI Software Documentation"`) | `ai-doc`, `ai-scaffold-docusaurus-site` |
+| **AI Architecture Decisions** (`"AI Architecture Decisions"`)   | `ai-adr`                                                                                                           |
+| **AI Agent Context** (`"AI Agent Context"`)                     | `ai-agent-context`, `ai-make-skill`, `ai-scaffold-agents-md`                                                       |
+| **AI Development Process** (`"AI Development Process"`)         | `ai-dev-autopr`, `ai-dev-issue`, `ai-scaffold-dev-context`, `ai-scaffold-dev-templates`                            |
+| **AI Prose Documents** (`"AI Prose Documents"`)                 | `ai-human-docx`, `ai-human-draft`, `ai-human-outline`, `ai-human-pdf`, `ai-human-xlsx`                             |
+| **AI Software Documentation** (`"AI Software Documentation"`)   | `ai-doc`, `ai-scaffold-docusaurus-site`                                                                            |
 
 Individual skill names (e.g. `--skills ai-plan`) also work; `ai-workflow` is only added with the full AI Spec-Driven Development bundle or by name. Each skill is installed as an Agent Skills directory in each selected agent's skills folder (`.claude/skills/`, `.kiro/skills/`, …). Claude Code gets the skill as published. Agents differ in which frontmatter fields they read and enforce, such as a skill's tool restrictions and whether it runs only when invoked by name, so every other agent gets the same files with its own `SKILL.md`, built at install time the way the ai-skills installer builds it for Kiro, Codex and pi:
 
-| Agent | Its `SKILL.md` |
-| ----- | -------------- |
-| Kiro | Keeps only the frontmatter fields Kiro reads and states the skill's tool declarations in a `## Tool restrictions` section. An explicit-only skill also gets an `## Invocation` section: run it only when invoked by name |
-| Codex | Kiro's form without the `## Invocation` section, with commands written `$ai-…`. An explicit-only skill also gets `agents/openai.yaml`, which turns off implicit invocation |
-| pi | Also keeps `allowed-tools` and `disable-model-invocation` in its frontmatter, states the tool declarations in `## Tool restrictions`, and writes commands as `/skill:ai-…` |
-| Cline, Roo Code, other agents | Kiro's form, naming the agent |
+| Agent                         | Its `SKILL.md`                                                                                                                                                                                                           |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Kiro                          | Keeps only the frontmatter fields Kiro reads and states the skill's tool declarations in a `## Tool restrictions` section. An explicit-only skill also gets an `## Invocation` section: run it only when invoked by name |
+| Codex                         | Kiro's form without the `## Invocation` section, with commands written `$ai-…`. An explicit-only skill also gets `agents/openai.yaml`, which turns off implicit invocation                                               |
+| pi                            | Also keeps `allowed-tools` and `disable-model-invocation` in its frontmatter, states the tool declarations in `## Tool restrictions`, and writes commands as `/skill:ai-…`                                               |
+| Cline, Roo Code, other agents | Kiro's form, naming the agent                                                                                                                                                                                            |
 
 pi and other agents share `.agents/skills/`, which holds pi's copy when pi is selected.
 
-| Skill | What it does |
-| ----- | ------------ |
-| `ai-create` | Creates a working folder with a `README.md` identity document for a feature or a document (`docs/working/YYYY-MM-DD-<name>/README.md`) |
-| `ai-research` | Researches a codebase or a topic, producing structured findings (`research.md`) that end with a human review block |
-| `ai-plan` | Writes an implementation plan with phases, code samples and testing strategy (`plan.md`), ending with a human review block |
-| `ai-implement` | Executes the plan, building the code it specifies |
-| `ai-archive` | Retires a finished folder into `docs/working/.archive/` |
-| `ai-adr` | Keeps the architecture decision log: stands it up, then writes records and moves them through propose, accept and decline |
-| `ai-agent-context` | Writes agent context documentation (`CLAUDE.md` + `README.md`) for a source directory |
-| `ai-make-skill` | Writes a new agent skill, from a description or from work already done in the conversation |
-| `ai-scaffold-agents-md` | Makes `AGENTS.md` the single source of agent context, with a `CLAUDE.md` beside each that imports it |
-| `ai-scaffold-dev-context` | Records how the repository is developed (forge, base branch, verification commands, …) as one block in the root `AGENTS.md` or `CLAUDE.md` |
-| `ai-scaffold-dev-templates` | Writes the repository's issue, merge request and review templates in its forge's format |
-| `ai-dev-issue` | Files a clear, complete issue in the project's tracker, or a dated markdown file when there is none |
-| `ai-dev-autopr` | Drives a spec, issue or ticket end to end into a merge-ready pull or merge request, including the push |
-| `ai-human-outline` | Turns a document folder into `outline.md`: a heading hierarchy with drafting guidance under every heading |
-| `ai-human-draft` | Turns a document folder into `draft.md`, following `outline.md` and `research.md` when present |
-| `ai-human-docx` | Exports one markdown file to Microsoft Word (`.docx`) |
-| `ai-human-pdf` | Exports one markdown file to a PDF with a cover page and table of contents |
-| `ai-human-xlsx` | Exports a markdown file or a working folder to one Microsoft Excel workbook (`.xlsx`) |
-| `ai-doc` | Files documentation into the project's docs tree by Diátaxis mode |
-| `ai-scaffold-docusaurus-site` | Scaffolds a Docusaurus 3 documentation site after a short interview |
+| Skill                         | What it does                                                                                                                               |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ai-create`                   | Creates a working folder with a `README.md` identity document for a feature or a document (`docs/working/YYYY-MM-DD-<name>/README.md`)     |
+| `ai-research`                 | Researches a codebase or a topic, producing structured findings (`research.md`) that end with a human review block                         |
+| `ai-plan`                     | Writes an implementation plan with phases, code samples and testing strategy (`plan.md`), ending with a human review block                 |
+| `ai-implement`                | Executes the plan, building the code it specifies                                                                                          |
+| `ai-archive`                  | Retires a finished folder into `docs/working/.archive/`                                                                                    |
+| `ai-adr`                      | Keeps the architecture decision log: stands it up, then writes records and moves them through propose, accept and decline                  |
+| `ai-agent-context`            | Writes agent context documentation (`CLAUDE.md` + `README.md`) for a source directory                                                      |
+| `ai-make-skill`               | Writes a new agent skill, from a description or from work already done in the conversation                                                 |
+| `ai-scaffold-agents-md`       | Makes `AGENTS.md` the single source of agent context, with a `CLAUDE.md` beside each that imports it                                       |
+| `ai-scaffold-dev-context`     | Records how the repository is developed (forge, base branch, verification commands, …) as one block in the root `AGENTS.md` or `CLAUDE.md` |
+| `ai-scaffold-dev-templates`   | Writes the repository's issue, merge request and review templates in its forge's format                                                    |
+| `ai-dev-issue`                | Files a clear, complete issue in the project's tracker, or a dated markdown file when there is none                                        |
+| `ai-dev-autopr`               | Drives a spec, issue or ticket end to end into a merge-ready pull or merge request, including the push                                     |
+| `ai-human-outline`            | Turns a document folder into `outline.md`: a heading hierarchy with drafting guidance under every heading                                  |
+| `ai-human-draft`              | Turns a document folder into `draft.md`, following `outline.md` and `research.md` when present                                             |
+| `ai-human-docx`               | Exports one markdown file to Microsoft Word (`.docx`)                                                                                      |
+| `ai-human-pdf`                | Exports one markdown file to a PDF with a cover page and table of contents                                                                 |
+| `ai-human-xlsx`               | Exports a markdown file or a working folder to one Microsoft Excel workbook (`.xlsx`)                                                      |
+| `ai-doc`                      | Files documentation into the project's docs tree by Diátaxis mode                                                                          |
+| `ai-scaffold-docusaurus-site` | Scaffolds a Docusaurus 3 documentation site after a short interview                                                                        |
 
 The working root is `docs/working/` unless an optional root `.ai-skills.toml` sets a string `output_path`. The SDD skills keep a working manifest at `<working root>/README.md`.
 
@@ -730,12 +777,12 @@ The working root is `docs/working/` unless an optional root `.ai-skills.toml` se
 1. **Prepares inputs.** Optionally ingests an engagement readout (PDF or Word), offers to write `.context/README.md` (objectives, constraints, key terms, references) and to list it in `context_files` of `.ai-skills.toml`, showing you both changes first, and vendors reference artifacts into `.lb_workspace/ai_workflow/references/`.
 2. **Recommends a named chain** for your scenario:
 
-   | Chain | Sequence |
-   | ----- | -------- |
-   | Quick Fix | `/ai-create → /ai-implement` |
-   | Standard Feature | `/ai-create → /ai-research → /ai-plan → /ai-implement` |
+   | Chain                           | Sequence                                                                                           |
+   | ------------------------------- | -------------------------------------------------------------------------------------------------- |
+   | Quick Fix                       | `/ai-create → /ai-implement`                                                                       |
+   | Standard Feature                | `/ai-create → /ai-research → /ai-plan → /ai-implement`                                             |
    | Greenfield / Engagement Kickoff | readout, context, references and a small first feature slate, then Standard Feature per slate item |
-   | Investigation | `/ai-research <topic>` (nothing is built) |
+   | Investigation                   | `/ai-research <topic>` (nothing is built)                                                          |
 
    Every chain that creates a folder ends with you checking `[x] Complete` in the folder README, then `/ai-archive <name>`.
 
@@ -922,21 +969,21 @@ Repeat Phases D–E for each feature sprint, using the feature-recommendations r
 
 All artifacts are written to `.lb_workspace/` (gitignored).
 
-| Path                                                  | Created by              | Contents                                                                                                             |
-| ----------------------------------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `.lb_workspace/setup_status.md`                       | lb-setup                | Tracks which setup tasks are complete                                                                                |
-| `.lb_workspace/config/lb_env`                         | lb-setup                | AWS auth method, profile, and codebase path (`aws_profile`, `iam_instance_profile`, `container_role`, or `env_vars`) |
-| `.lb_workspace/config/version_manifest.json`          | installer               | Version tracking, per-skill content hashes, delivery method (enables upgrade detection)                              |
-| `.lb_workspace/config/lb_agents_reference.md`         | installer               | Canonical AGENTS.md reference used by lb-setup                                                                       |
-| `.lb_workspace/config/python_deps/pyproject.toml`     | installer               | Python dependency config for `.venv_lb`                                                                              |
-| `.lb_workspace/indexing_and_qa/inq_config.yaml`       | indexing-and-qa         | Indexing models, regions, ignore patterns                                                                            |
-| `.lb_workspace/guardrails/`                           | code-guardrails         | Project context, scope, best practices, feature guides                                                               |
-| `.lb_workspace/config/config-prompt-store.yaml`       | config-prompt-registry  | All config values and prompt templates                                                                               |
-| `.lb_workspace/tests/TEST_REPORT.md`                  | testing-framework       | Test inventory, coverage, results                                                                                    |
-| `.lb_workspace/data/run_{timestamp}/`                 | data-wrangler           | Prepared data + `data_manifest.json`                                                                                 |
-| `.lb_workspace/predictions/run_{timestamp}/`          | generate-predictions    | `output.json` + `prediction_manifest.json`                                                                           |
-| `.lb_workspace/evaluations/run_{timestamp}/`          | evaluate-predictions    | `evaluation_manifest.json` + `custom_metrics.py`                                                                     |
-| `.lb_workspace/metric_analysis/comparison_{timestamp}.md` | comparative-metric-analysis | Cross-run comparison report (trend/variant/hybrid/stability) with a Source Runs reference table                 |
-| `.lb_workspace/operational_metrics/{timestamp}/`      | operational-metrics     | Cost/latency CSVs, markdown reports, HTML dashboard                                                                  |
-| `.lb_workspace/feature_recommendations/`              | feature-recommendations | `FEATURE_RECOMMENDATIONS_{timestamp}.md`                                                                             |
-| `.project_artifacts/`                                 | (user-provided)         | Engagement documents for indexing (PDFs, PPTX, etc.)                                                                 |
+| Path                                                      | Created by                  | Contents                                                                                                             |
+| --------------------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `.lb_workspace/setup_status.md`                           | lb-setup                    | Tracks which setup tasks are complete                                                                                |
+| `.lb_workspace/config/lb_env`                             | lb-setup                    | AWS auth method, profile, and codebase path (`aws_profile`, `iam_instance_profile`, `container_role`, or `env_vars`) |
+| `.lb_workspace/config/version_manifest.json`              | installer                   | Version tracking, per-skill content hashes, delivery method (enables upgrade detection)                              |
+| `.lb_workspace/config/lb_agents_reference.md`             | installer                   | Canonical AGENTS.md reference used by lb-setup                                                                       |
+| `.lb_workspace/config/python_deps/pyproject.toml`         | installer                   | Python dependency config for `.venv_lb`                                                                              |
+| `.lb_workspace/indexing_and_qa/inq_config.yaml`           | indexing-and-qa             | Indexing models, regions, ignore patterns                                                                            |
+| `.lb_workspace/guardrails/`                               | code-guardrails             | Project context, scope, best practices, feature guides                                                               |
+| `.lb_workspace/config/config-prompt-store.yaml`           | config-prompt-registry      | All config values and prompt templates                                                                               |
+| `.lb_workspace/tests/TEST_REPORT.md`                      | testing-framework           | Test inventory, coverage, results                                                                                    |
+| `.lb_workspace/data/run_{timestamp}/`                     | data-wrangler               | Prepared data + `data_manifest.json`                                                                                 |
+| `.lb_workspace/predictions/run_{timestamp}/`              | generate-predictions        | `output.json` + `prediction_manifest.json`                                                                           |
+| `.lb_workspace/evaluations/run_{timestamp}/`              | evaluate-predictions        | `evaluation_manifest.json` + `custom_metrics.py`                                                                     |
+| `.lb_workspace/metric_analysis/comparison_{timestamp}.md` | comparative-metric-analysis | Cross-run comparison report (trend/variant/hybrid/stability) with a Source Runs reference table                      |
+| `.lb_workspace/operational_metrics/{timestamp}/`          | operational-metrics         | Cost/latency CSVs, markdown reports, HTML dashboard                                                                  |
+| `.lb_workspace/feature_recommendations/`                  | feature-recommendations     | `FEATURE_RECOMMENDATIONS_{timestamp}.md`                                                                             |
+| `.project_artifacts/`                                     | (user-provided)             | Engagement documents for indexing (PDFs, PPTX, etc.)                                                                 |

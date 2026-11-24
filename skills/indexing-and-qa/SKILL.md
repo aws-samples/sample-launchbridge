@@ -141,15 +141,15 @@ repository, delete the index folder and index again.
 All script paths in this document are relative to the skill's installation directory (`{skill_dir}`).
 
 - `{skill_dir}` = the directory containing this SKILL.md file
-- Example: if skill is at `/path/to/workspace/.kiro/skills/indexing-and-qa/`, then `{skill_dir}/scripts/inq_config_setup.sh` = `/path/to/workspace/.kiro/skills/indexing-and-qa/scripts/inq_config_setup.sh`
+- Example: if skill is at `/path/to/workspace/.kiro/skills/indexing-and-qa/`, then `{skill_dir}/scripts/inq_config_setup.sh` = `/path/to/workspace/.kiro/skills/indexing-and-qa/scripts/inq_config_setup.sh`; for a global install at `~/.kiro/skills/indexing-and-qa/`, it is `~/.kiro/skills/indexing-and-qa/scripts/inq_config_setup.sh`
 
 ### ALWAYS resolve `{skill_dir}` to the folder this SKILL.md was loaded from
 
-`{skill_dir}` is the folder this SKILL.md was loaded from, in this agent's own skills folder inside `{codebase_abs_path}` (for example `{codebase_abs_path}/.kiro/skills/indexing-and-qa/` for Kiro or `{codebase_abs_path}/.claude/skills/indexing-and-qa/` for Claude Code). Resolve it that way and nothing else: never use another agent's skills folder, which LaunchBridge didn't install for this agent, didn't check, and could have arrived with the repository.
+`{skill_dir}` is the folder this SKILL.md was loaded from, in this agent's own skills folder: inside `{codebase_abs_path}` for a local install (for example `{codebase_abs_path}/.kiro/skills/indexing-and-qa/` for Kiro or `{codebase_abs_path}/.claude/skills/indexing-and-qa/` for Claude Code), or in the user's home folder for a global install (for example `~/.kiro/skills/indexing-and-qa/`, `~/.claude/skills/indexing-and-qa/`, or `~/.agents/skills/indexing-and-qa/` for Codex and pi). Resolve it that way and nothing else: never use another agent's skills folder, which LaunchBridge didn't install for this agent, didn't check, and could have arrived with the repository. The scripts always work on `{codebase_abs_path}`, wherever `{skill_dir}` is.
 
-- The scripts under `{skill_dir}/scripts/` may be symlinks into the LaunchBridge source repo. Invoke them through the `{skill_dir}` path (e.g. `bash "{skill_dir}/scripts/inq_run_indexing.sh" ...`) — the shell follows the symlink.
+- In a symlink install, `{skill_dir}` is a link into the LaunchBridge source repo. Invoke the scripts through the `{skill_dir}` path (e.g. `bash "{skill_dir}/scripts/inq_run_indexing.sh" ...`) — the shell follows the symlink. A file tool may list the linked folder as empty; read or run its files by their full path instead.
 - Do **NOT** run `find`, `file_search`, or any global search to locate these scripts. Kiro keeps per-file content-addressed copies elsewhere on disk (e.g. under `globalStorage/`) where `inq_run_indexing.sh` and `codebase_artifact_indexing.py` land in **separate** folders, so a copy found that way can't find its sibling script.
-- If `{skill_dir}/scripts/inq_run_indexing.sh` is missing, stop and tell the user the skill is not installed in the workspace — do not substitute a copy found elsewhere.
+- If `{skill_dir}/scripts/inq_run_indexing.sh` is missing, stop and tell the user the skill is not installed for this agent (in the workspace or, for a global install, in the home folder) — do not substitute a copy found elsewhere.
 - If a script is not marked executable, invoke it with an explicit interpreter (`bash "<path>"`) rather than executing it directly.
 
 ## Task 1: Skill Setup/Index

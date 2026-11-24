@@ -781,6 +781,29 @@ def test_only_a_tracked_skill_md_in_its_own_case_counts(repo):
 
 
 @git_required
+def test_a_global_skill_folder_is_outside_the_repositorys_import_checks(repo, tmp_path):
+    """A global install's skills are in the home folder: no commit to the
+    repository can change them (verify_integrity.py --global checks them), so
+    the guard does not look there, while the same files in the repository's
+    own skills folder are refused."""
+    _git(repo, "init", "-q")
+    home_scripts = tmp_path / "home" / ".claude" / "skills" / "demo" / "scripts"
+    home_scripts.mkdir(parents=True)
+    (home_scripts / "run.py").write_text("")
+    (home_scripts / "json.py").write_text("")
+    assert guard.import_findings(repo, [str(home_scripts / "run.py")], {}) == (
+        [],
+        [],
+    )
+
+    scripts = _skill(repo)
+    (scripts / "json.py").write_text("")
+    _git(repo, "add", "-f", str(scripts / "json.py"))
+    refused, _warned = guard.import_findings(repo, [str(scripts / "run.py")], {})
+    assert refused and "but not its SKILL.md" in refused[0]
+
+
+@git_required
 def test_a_tracked_module_in_a_folder_that_isnt_a_skill_is_a_warning(repo):
     _git(repo, "init", "-q")
     lib = repo / "vendor" / "lib"

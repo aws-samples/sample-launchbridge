@@ -102,7 +102,15 @@ describe.skipIf(!hasGit || process.platform === 'win32')(
         const install = (...args) =>
             spawnSync(
                 process.execPath,
-                [INSTALLER, '--yes', '--agent', 'claude', ...args],
+                [
+                    INSTALLER,
+                    '--yes',
+                    '--scope',
+                    'local',
+                    '--agent',
+                    'claude',
+                    ...args,
+                ],
                 { cwd: target, encoding: 'utf-8' }
             );
 
@@ -225,6 +233,56 @@ describe.skipIf(process.platform === 'win32')(
             expect(
                 fs.existsSync(
                     path.join(skillDir('code-guardrails'), 'SKILL.md')
+                )
+            ).toBe(true);
+        });
+
+        it('links a recorded per-file symlink install to its folder, and leaves an unrecorded one', async () => {
+            // What an older symlink install made: a real folder of links.
+            for (const name of ['code-guardrails', 'testing-framework']) {
+                fs.mkdirSync(skillDir(name), { recursive: true });
+                fs.symlinkSync(
+                    path.join(REPO_ROOT, 'skills', name, 'SKILL.md'),
+                    path.join(skillDir(name), 'SKILL.md')
+                );
+            }
+            writeManifest({
+                installMethod: 'symlink',
+                skills: ['testing-framework', 'code-guardrails'],
+                skillHashes: {
+                    'testing-framework': 'stale',
+                    'code-guardrails': 'stale',
+                },
+                installedTargets: ['.claude/skills/code-guardrails'],
+            });
+
+            await runPostPullSync(REPO_ROOT, repo, quietUi());
+
+            const linked = skillDir('code-guardrails');
+            expect(fs.lstatSync(linked).isSymbolicLink()).toBe(true);
+            expect(fs.realpathSync(linked)).toBe(
+                fs.realpathSync(
+                    path.join(REPO_ROOT, 'skills', 'code-guardrails')
+                )
+            );
+            expect(
+                fs.lstatSync(skillDir('testing-framework')).isSymbolicLink()
+            ).toBe(false);
+            expect(
+                fs
+                    .lstatSync(
+                        path.join(skillDir('testing-framework'), 'SKILL.md')
+                    )
+                    .isSymbolicLink()
+            ).toBe(true);
+            expect(
+                fs.existsSync(
+                    path.join(
+                        REPO_ROOT,
+                        'skills',
+                        'code-guardrails',
+                        'SKILL.md'
+                    )
                 )
             ).toBe(true);
         });

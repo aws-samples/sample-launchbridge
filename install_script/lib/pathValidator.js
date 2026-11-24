@@ -9,13 +9,18 @@
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
-import { getAgentConfig } from './agentConfig.js';
-import { validatePathWithinBase, safePathJoin } from './pathSanitizer.js';
+import { getAgentConfig, getSkillsDir } from './agentConfig.js';
+import {
+    validatePathWithinBase,
+    safePathJoin,
+    isPathWithin,
+} from './pathSanitizer.js';
 import { WORKSPACE_SUBDIRECTORIES, ARTIFACT_STRUCTURE } from './folderSetup.js';
+import { realpathOfNearest } from './stateDir.js';
 
 /**
  * @typedef {import('./agentConfig.js').AgentType} Agent
- * @typedef {'local' | 'global'} Scope
+ * @typedef {import('./agentConfig.js').Scope} Scope
  */
 
 /**
@@ -248,6 +253,84 @@ export function checkSkillsDirectory(skillsDir, rootPath) {
     return checkPathInRoot(skillsDir, rootPath);
 }
 
+/**
+ * Checks a user-level (global install) skills directory before anything is
+ * written into it or removed from it.
+ *
+ * Unlike a repository's skills directory, links on the way are allowed: a
+ * `~/.claude` that points into a dotfiles repository is a common setup. The
+ * directory must still be under the home directory as written, every existing
+ * component must be a directory (or a link to one), and its real location must
+ * not be inside the LaunchBridge source, whose own skills an install there
+ * would overwrite.
+ *
+ * @param {string} skillsDir - Absolute skills directory (e.g. `~/.claude/skills`)
+ * @param {{ sourcePath?: string, home?: string }} [options] - The LaunchBridge
+ *     source, and the home directory (default `os.homedir()`)
+ * @returns {Promise<{ok: true, realPath: string, linked: boolean} | {ok: false, reason: string}>}
+ *     `realPath` is where the directory really is; `linked` is true when a
+ *     link on the way makes that differ from the path as written
+ */
+export async function checkGlobalSkillsDirectory(
+    skillsDir,
+    { sourcePath, home = os.homedir() } = {}
+) {
+    const dir = path.resolve(skillsDir);
+    const homeDir = path.resolve(home);
+    const rel = path.relative(homeDir, dir);
+    if (
+        rel === '' ||
+        rel === '..' ||
+        rel.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(rel)
+    ) {
+        return {
+            ok: false,
+            reason: `${dir} is not inside your home directory (${homeDir})`,
+        };
+    }
+
+    let current = homeDir;
+    for (const part of rel.split(path.sep)) {
+        current = path.join(current, part);
+        let stats;
+        try {
+            stats = await fs.promises.lstat(current);
+        } catch (err) {
+            if (err.code === 'ENOENT') break;
+            throw err;
+        }
+        if (stats.isSymbolicLink()) {
+            try {
+                stats = await fs.promises.stat(current);
+            } catch {
+                return {
+                    ok: false,
+                    reason: `${current} is a link to something that does not exist`,
+                };
+            }
+        }
+        if (!stats.isDirectory()) {
+            return { ok: false, reason: `${current} is not a directory` };
+        }
+    }
+
+    const realPath = realpathOfNearest(dir);
+    if (sourcePath) {
+        const realSource = fs.realpathSync(sourcePath);
+        if (isPathWithin(realPath, realSource)) {
+            return {
+                ok: false,
+                reason:
+                    `${dir} resolves to ${realPath}, inside the LaunchBridge source ` +
+                    `(${realSource}); installing there would overwrite the source's own files`,
+            };
+        }
+    }
+    const asWritten = path.join(realpathOfNearest(homeDir), rel);
+    return { ok: true, realPath, linked: realPath !== asWritten };
+}
+
 /** `.lb_workspace` directories the installer and updater write into. */
 const WORKSPACE_DIRS = [
     '',
@@ -304,17 +387,36 @@ export async function checkWorkspace(targetRepo) {
 }
 
 /**
+ * The absolute user-level skills directory of an agent (a global install).
+ *
+ * @param {Agent} agent
+ * @param {{ home?: string, pathApi?: typeof path }} [options] - The home
+ *     directory (default `os.homedir()`, which is `$HOME` on macOS and Linux
+ *     and `%USERPROFILE%` on Windows) and the path flavour to join with
+ *     (default the platform's; tests pass `path.win32`)
+ * @returns {string}
+ */
+export function globalSkillsDir(
+    agent,
+    { home = os.homedir(), pathApi = path } = {}
+) {
+    // The segments come from the fixed agent table, not from user input.
+    const segments = getSkillsDir(agent, 'global').split('/');
+    // nosemgrep: path-join-resolve-traversal
+    return pathApi.join(home, ...segments);
+}
+
+/**
  * Resolves the target path for skill installation based on agent, scope, and target repository.
  *
- * Target paths resolve as:
- * - Local + Kiro: `<targetRepo>/.kiro/skills`
- * - Local + Claude: `<targetRepo>/.claude/skills`
- * - Global + Kiro: `~/.kiro/skills`
- * - Global + Claude: `~/.claude/skills`
+ * Target paths resolve as (see the AGENTS table in agentConfig.js):
+ * - Local: `<targetRepo>/<skillsDir>`, e.g. `<targetRepo>/.kiro/skills`
+ * - Global: `<home>/<globalSkillsDir>`, e.g. `~/.kiro/skills`, `~/.claude/skills`,
+ *   and `~/.agents/skills` for Codex, pi and other agents
  *
- * @param {Agent} agent - The agent type ('kiro' or 'claude')
+ * @param {Agent} agent - The agent type (a key of AGENTS)
  * @param {Scope} scope - The installation scope ('local' or 'global')
- * @param {string} targetRepo - The target repository path (used for local scope)
+ * @param {string} [targetRepo] - The target repository path (local scope only)
  * @returns {string} The resolved target path
  */
 export function getTargetPath(agent, scope, targetRepo) {
@@ -324,7 +426,7 @@ export function getTargetPath(agent, scope, targetRepo) {
     }
 
     if (scope === 'global') {
-        return safePathJoin(os.homedir(), config.skillsDir);
+        return globalSkillsDir(agent);
     }
 
     // targetRepo comes from process.cwd() — already a trusted absolute path.
@@ -334,5 +436,5 @@ export function getTargetPath(agent, scope, targetRepo) {
         );
     }
     const resolvedTargetRepo = sanitizeAndResolveUserPath(targetRepo);
-    return safePathJoin(resolvedTargetRepo, config.skillsDir);
+    return safePathJoin(resolvedTargetRepo, getSkillsDir(agent, 'local'));
 }

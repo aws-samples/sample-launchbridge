@@ -17,14 +17,22 @@ import os from 'os';
 import path from 'path';
 
 /**
+ * The folder every LaunchBridge state directory lives in: an absolute
+ * `$XDG_CONFIG_HOME`, otherwise `~/.config` (a relative XDG_CONFIG_HOME is
+ * ignored, as the XDG spec requires).
+ * @returns {string}
+ */
+function stateBase() {
+    const xdg = process.env.XDG_CONFIG_HOME || '';
+    return path.isAbsolute(xdg) ? xdg : path.join(os.homedir(), '.config');
+}
+
+/**
  * @param {string} targetRepo
  * @returns {string} The repository's state directory (not created)
  */
 export function repoStateDir(targetRepo) {
-    const xdg = process.env.XDG_CONFIG_HOME || '';
-    const base = path.isAbsolute(xdg)
-        ? xdg
-        : path.join(os.homedir(), '.config');
+    const base = stateBase();
     const resolved = fsSync.realpathSync(targetRepo);
     const key = crypto
         .createHash('sha256')
@@ -39,7 +47,7 @@ export function repoStateDir(targetRepo) {
  * @param {string} target - absolute path
  * @returns {string}
  */
-function realpathOfNearest(target) {
+export function realpathOfNearest(target) {
     let existing = target;
     const rest = [];
     while (!fsSync.existsSync(existing)) {
@@ -78,4 +86,110 @@ export async function writeRepoState(targetRepo, name, text) {
     await fs.writeFile(file, text, { mode: 0o600 });
     await fs.chmod(file, 0o600);
     return file;
+}
+
+// ── Global install record ─────────────────────────────────────────────────────
+
+/** The global install manifest, in the global state directory. */
+export const GLOBAL_MANIFEST = 'manifest.json';
+
+/** The LaunchBridge source the global install came from. */
+export const GLOBAL_INSTALL_SOURCE = 'install_source.json';
+
+/** File names writeGlobalState accepts. */
+const GLOBAL_STATE_FILES = new Set([GLOBAL_MANIFEST, GLOBAL_INSTALL_SOURCE]);
+
+/**
+ * The global install's state directory, `<state base>/launchbridge/global`,
+ * beside the per-repository `repos/` folder. The skills' Python scripts derive
+ * the same path (lb-setup/scripts/bootstrap_workspace.py, verify_integrity.py).
+ * @returns {string} (not created)
+ */
+export function globalStateDir() {
+    return path.join(stateBase(), 'launchbridge', 'global');
+}
+
+/** The folder in the global state directory the generated files go in. */
+export const GLOBAL_GENERATED_DIR = 'generated';
+
+/**
+ * Where a global install keeps the files lb-setup prepares each repository
+ * from (globalAssets.js): `<global state dir>/generated`, one copy for every
+ * agent. The skills' Python scripts derive the same path
+ * (verify_integrity.global_generated_dir).
+ * @returns {string} (not created)
+ */
+export function globalGeneratedDir() {
+    return path.join(globalStateDir(), GLOBAL_GENERATED_DIR);
+}
+
+/**
+ * Writes one of the global state files atomically (a temporary file renamed
+ * into place), readable by the user only, in a folder only the user can enter.
+ * @param {string} name - GLOBAL_MANIFEST or GLOBAL_INSTALL_SOURCE
+ * @param {string} text
+ * @returns {Promise<string>} The file written
+ */
+export async function writeGlobalState(name, text) {
+    if (!GLOBAL_STATE_FILES.has(name)) {
+        throw new Error(`Unknown global state file: ${name}`);
+    }
+    const dir = globalStateDir();
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+    await fs.chmod(dir, 0o700);
+    const file = path.join(dir, name);
+    const temp = path.join(
+        dir,
+        `.${name}.${crypto.randomBytes(8).toString('hex')}.tmp`
+    );
+    try {
+        await fs.writeFile(temp, text, { mode: 0o600, flag: 'wx' });
+        await fs.chmod(temp, 0o600);
+        await fs.rename(temp, file);
+    } catch (err) {
+        await fs.rm(temp, { force: true });
+        throw err;
+    }
+    return file;
+}
+
+/**
+ * The global install manifest, or null when there is none or it is not one
+ * (unreadable, invalid JSON, or missing the fields every manifest has).
+ * @returns {Promise<object|null>}
+ */
+export async function readGlobalManifest() {
+    try {
+        const parsed = JSON.parse(
+            await fs.readFile(
+                path.join(globalStateDir(), GLOBAL_MANIFEST),
+                'utf8'
+            )
+        );
+        if (
+            typeof parsed !== 'object' ||
+            parsed === null ||
+            parsed.scope !== 'global' ||
+            typeof parsed.version !== 'string' ||
+            typeof parsed.skillHashes !== 'object' ||
+            parsed.skillHashes === null
+        ) {
+            return null;
+        }
+        return parsed;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Records the LaunchBridge source the global install came from. verify_integrity
+ * --global checks a symlink install's links against it.
+ * @param {string} sourcePath
+ */
+export async function recordGlobalInstallSource(sourcePath) {
+    await writeGlobalState(
+        GLOBAL_INSTALL_SOURCE,
+        JSON.stringify({ sourcePath: path.resolve(sourcePath) }) + '\n'
+    );
 }

@@ -9,11 +9,13 @@
  * compares the installed directories themselves before deciding there is nothing
  * to do.
  *
- * Both install methods are compared entry by entry against the source: a copy
- * install's files must have the source files' bytes, and a symlink install's
- * per-file links must point at the matching source files. Python bytecode in the
- * installed directory (`__pycache__/`, `*.pyc`) is removed first: Python would
- * run it in place of the scripts, and it is never part of what is installed.
+ * A symlink install's skill folder must be a link to the source folder. A copy
+ * is compared entry by entry against the source: its files must have the
+ * source files' bytes (an older symlink install's per-file links must point at
+ * the matching source files). Python bytecode in a copied directory
+ * (`__pycache__/`, `*.pyc`) is removed first: Python would run it in place of
+ * the scripts, and it is never part of what is installed. A linked folder is
+ * never changed: it is the LaunchBridge source itself.
  */
 
 import fs from 'fs/promises';
@@ -90,31 +92,67 @@ async function linkTargets(dir) {
 }
 
 /**
+ * How an installed skill folder is laid out, without following it: `link` (a
+ * symbolic link or junction, as a symlink install makes), `copy` (a real
+ * folder holding no links), `per-file` (a real folder holding links, as an
+ * older symlink install made: one link per file), `other` (not a folder), or
+ * null when nothing is there.
+ *
+ * @param {string} targetPath
+ * @returns {Promise<'link' | 'copy' | 'per-file' | 'other' | null>}
+ */
+export async function installedLayout(targetPath) {
+    let stats;
+    try {
+        stats = await fs.lstat(targetPath);
+    } catch (error) {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+    }
+    if (stats.isSymbolicLink()) return 'link';
+    if (!stats.isDirectory()) return 'other';
+    return (await linkTargets(targetPath)).length > 0 ? 'per-file' : 'copy';
+}
+
+/**
  * @param {string} targetPath - Installed skill directory (or a link to one)
  * @param {string | undefined} sourcePath - The skill's directory in this source
  * @param {string} [sourceRoot] - The LaunchBridge source; every link in the
  *   installed directory must resolve inside it (default: `sourcePath`)
+ * @param {{ overrides?: Map<string, Buffer>, layout?: 'link' | 'copy' }} [options]
+ *   `overrides`: files the installer writes itself in place of (or beside) the
+ *   source's, by POSIX relative path: an AI skill's SKILL.md for every agent
+ *   but Claude Code, and Codex's agents/openai.yaml. Each must be a regular
+ *   file holding exactly these bytes. `layout`: how this run installs the
+ *   skill (installer.js skillLayout); an installed folder laid out the other
+ *   way doesn't match. Without it, either way matches.
  * @returns {Promise<boolean>} true when the installed directory holds exactly the
- *   source's files: identical copies, or links to the matching source files
+ *   source's files: a link to the source folder, identical copies, or (an
+ *   older symlink install) links to the matching source files
  */
 export async function installedSkillMatches(
     targetPath,
     sourcePath,
-    sourceRoot = sourcePath
+    sourceRoot = sourcePath,
+    { overrides, layout } = {}
 ) {
     if (!sourcePath) return false;
     try {
         const stats = await fs.lstat(targetPath);
         const sourceReal = await fs.realpath(sourcePath);
         if (stats.isSymbolicLink()) {
+            if (layout === 'copy') return false;
             return (await fs.realpath(targetPath)) === sourceReal;
         }
-        if (!stats.isDirectory()) return false;
+        if (!stats.isDirectory() || layout === 'link') return false;
 
         // A link elsewhere (a folder in the repository holding planted bytecode
-        // or scripts) would be followed below and its contents trusted.
+        // or scripts) would be followed below and its contents trusted. A
+        // copy holds no links at all.
         const root = await fs.realpath(sourceRoot);
-        for (const target of await linkTargets(targetPath)) {
+        const links = await linkTargets(targetPath);
+        if (layout === 'copy' && links.length > 0) return false;
+        for (const target of links) {
             const relative = path.relative(root, target);
             if (relative.startsWith('..') || path.isAbsolute(relative)) {
                 return false;
@@ -122,15 +160,30 @@ export async function installedSkillMatches(
         }
 
         await removeInstalledBytecode(targetPath);
-        const [installed, expected] = await Promise.all([
+        const own = new Map(
+            [...(overrides ?? new Map())].map(([rel, bytes]) => [
+                path.join(...rel.split('/')),
+                bytes,
+            ])
+        );
+        const [installed, fromSource] = await Promise.all([
             listFiles(targetPath),
             listFiles(sourceReal),
         ]);
+        const expected = [...new Set([...fromSource, ...own.keys()])].sort();
         if (installed.join('\0') !== expected.join('\0')) return false;
 
         for (const rel of installed) {
             const target = path.join(targetPath, rel);
             const source = path.join(sourceReal, rel);
+            if (own.has(rel)) {
+                const stats = await fs.lstat(target);
+                if (!stats.isFile()) return false;
+                if (!(await fs.readFile(target)).equals(own.get(rel))) {
+                    return false;
+                }
+                continue;
+            }
             if ((await fs.lstat(target)).isSymbolicLink()) {
                 if (
                     (await fs.realpath(target)) !== (await fs.realpath(source))

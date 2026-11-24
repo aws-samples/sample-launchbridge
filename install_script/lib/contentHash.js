@@ -7,7 +7,7 @@
  * detection. Files are sorted by relative path (forward-slash normalized)
  * before hashing to ensure platform-independent determinism.
  *
- * Excluded from hashing: .DS_Store, __pycache__/, *.pyc, .git/
+ * Excluded from hashing: .DS_Store, __pycache__/, *.pyc and .git/
  */
 
 import crypto from 'crypto';

@@ -39,11 +39,42 @@ export function displaySummary(selections) {
             ? 'Local (repository)'
             : 'Global (home directory)'
     );
+    for (const line of describeTargets(selections.targets ?? [])) {
+        kv('Target', line);
+    }
+    if (selections.scope === 'global') {
+        kv(
+            'Repository',
+            'not changed; lb-setup creates .lb_workspace in each repository'
+        );
+    }
     kv('Method', selections.method === 'symlink' ? 'Symlink' : 'Copy');
     kv('Source', selections.sourcePath);
     kv('Skills', selections.skills.join(', '));
 
     return '';
+}
+
+/**
+ * One line per skills directory, naming the agents that use it and, when a
+ * link on the way puts it somewhere else, where it really is.
+ *
+ * @param {Array<{ agent: string, path: string, realPath?: string }>} targets
+ * @returns {string[]}
+ */
+export function describeTargets(targets) {
+    /** @type {Map<string, { agents: string[], realPath?: string }>} */
+    const byPath = new Map();
+    for (const { agent, path: dir, realPath } of targets) {
+        if (!byPath.has(dir)) {
+            byPath.set(dir, { agents: [], realPath });
+        }
+        byPath.get(dir).agents.push(AGENTS[agent]?.displayName ?? agent);
+    }
+    return [...byPath].map(([dir, { agents, realPath }]) => {
+        const where = realPath && realPath !== dir ? ` → ${realPath}` : '';
+        return `${dir}${where} (${agents.join(', ')})`;
+    });
 }
 
 /**
@@ -168,9 +199,23 @@ export function getExitCode(report) {
  * @param {Object[]} results.failed - Skills that failed to install
  * @param {Object[]} results.skipped - Skills that were skipped
  * @param {import('./lifecycleOrchestrator.js').LifecycleDecision} decision - The lifecycle decision
+ * @param {{ scope?: 'local' | 'global' }} [options] - A global install changes no
+ *   repository, so the decision's setup_status resets are not reported for it
  * @returns {LifecycleReport}
  */
-export function buildLifecycleReport(results, decision) {
+export function buildLifecycleReport(
+    results,
+    decision,
+    { scope = 'local' } = {}
+) {
+    if (scope === 'global') {
+        decision = {
+            ...decision,
+            resetVenvSetup: false,
+            resetMcpSetup: false,
+            resetAgentsMerge: false,
+        };
+    }
     const installed = [];
     const updated = [];
     const failed = [];
@@ -209,7 +254,9 @@ export function buildLifecycleReport(results, decision) {
     const resetReasons = [];
     if (updated.length > 0) {
         resetReasons.push(
-            `${updated.length} skill${updated.length > 1 ? 's' : ''} updated with new content — setup will re-run`
+            scope === 'global'
+                ? `${updated.length} skill${updated.length > 1 ? 's' : ''} updated with new content — each repository picks up the change the next time lb-setup runs there`
+                : `${updated.length} skill${updated.length > 1 ? 's' : ''} updated with new content — setup will re-run`
         );
     }
     if (decision.resetVenvSetup) {
@@ -228,6 +275,7 @@ export function buildLifecycleReport(results, decision) {
 
     return {
         scenario: decision.scenario,
+        scope,
         installed,
         updated,
         removed,
@@ -239,6 +287,13 @@ export function buildLifecycleReport(results, decision) {
         needsLbSetup,
         resetReasons,
     };
+}
+
+/** The next step a lifecycle report ends with. */
+function lbSetupBanner(scope) {
+    return scope === 'global'
+        ? 'Skills installed globally — open your agent in a repository and run the skill "lb-setup" to prepare it'
+        : 'Skills installed — open your agent and run the skill "lb-setup" or ask your agent to start the LaunchBridge skills';
 }
 
 /**
@@ -281,9 +336,7 @@ export function displayLifecycleReport(report) {
             _displayFailed(report.failed);
             _displayWarnings(report.warnings);
             if (report.needsLbSetup) {
-                successBanner(
-                    'Skills installed — open your agent and run the skill "lb-setup" or ask your agent to start the LaunchBridge skills'
-                );
+                successBanner(lbSetupBanner(report.scope));
             }
             return;
         }
@@ -347,9 +400,7 @@ export function displayLifecycleReport(report) {
 
     // Next-step guidance
     if (report.needsLbSetup) {
-        successBanner(
-            'Skills installed — open your agent and run the skill "lb-setup" or ask your agent to start the LaunchBridge skills'
-        );
+        successBanner(lbSetupBanner(report.scope));
     }
 
     divider();

@@ -60,6 +60,42 @@ export const WORKSPACE_SUBDIRECTORIES = [
 ];
 
 /**
+ * The folders a repository gets for the installed skills: `.lb_workspace`
+ * with its subdirectories (the skill-specific ones only for the skills that
+ * need them), and `.project_artifacts` with its phase folders.
+ *
+ * @param {string[]} [installedSkills]
+ * @returns {{ workspace: { root: string, subdirectories: string[] },
+ *   artifacts: { root: string, subdirectories: string[] } }}
+ */
+export function workspaceLayout(installedSkills = []) {
+    const extraSubdirs = [];
+    for (const skill of installedSkills) {
+        const subdirs = Object.hasOwn(SKILL_CONDITIONAL_SUBDIRS, skill)
+            ? SKILL_CONDITIONAL_SUBDIRS[skill]
+            : null;
+        if (subdirs) {
+            for (const dir of subdirs) {
+                if (!extraSubdirs.includes(dir)) extraSubdirs.push(dir);
+            }
+        }
+    }
+    return {
+        workspace: {
+            root: FOLDER_STRUCTURE.root,
+            subdirectories: [
+                ...FOLDER_STRUCTURE.subdirectories,
+                ...extraSubdirs,
+            ],
+        },
+        artifacts: {
+            root: ARTIFACT_STRUCTURE.root,
+            subdirectories: [...ARTIFACT_STRUCTURE.subdirectories],
+        },
+    };
+}
+
+/**
  * @typedef {Object} SetupResult
  * @property {boolean} success - Whether the setup succeeded
  * @property {string[]} created - Directories that were created
@@ -146,19 +182,9 @@ export async function createFolderStructure(basePath, installedSkills = []) {
 
     // Build the .lb_workspace structure, appending any skill-conditional
     // subdirectories for the skills being installed (e.g. ai_workflow).
-    const extraSubdirs = [];
-    for (const skill of installedSkills) {
-        const subdirs = SKILL_CONDITIONAL_SUBDIRS[skill];
-        if (subdirs) {
-            extraSubdirs.push(...subdirs);
-        }
-    }
-    const lbStructure = {
-        root: FOLDER_STRUCTURE.root,
-        subdirectories: [...FOLDER_STRUCTURE.subdirectories, ...extraSubdirs],
-    };
+    const layout = workspaceLayout(installedSkills);
 
-    for (const structure of [lbStructure, ARTIFACT_STRUCTURE]) {
+    for (const structure of [layout.workspace, layout.artifacts]) {
         const rootCreated = await createStructure(basePath, structure, result);
         if (!rootCreated) {
             result.success = false;

@@ -71,6 +71,16 @@ uvx --from pip-licenses==5.5.5 pip-licenses --python "$LC_VENV/bin/python" --par
 
 Packages for another platform (the Windows-only ones in `constraints.txt`) are skipped there; check them on that platform when they change.
 
+CI runs on Linux only, so check a global install by hand on Windows before a release that changes the installer or lb-setup's scripts. Use PowerShell, a user without Administrator rights, and a scratch project (`mkdir $env:TEMP\lb-check; cd $env:TEMP\lb-check; git init`):
+
+1. **Copy install.** Run `launchbridge --scope global --agent claude,kiro --skills all --method copy --yes` from any folder. It exits 0, the skills are under `$env:USERPROFILE\.claude\skills` and `$env:USERPROFILE\.kiro\skills`, the record is in `$env:USERPROFILE\.config\launchbridge\global\manifest.json`, and the folder it ran in is unchanged.
+2. **Symlink install, Developer Mode off.** `launchbridge --scope global --agent claude --skills lb-setup --method symlink --yes` exits 0: `$env:USERPROFILE\.claude\skills\lb-setup` is a junction to the clone's `skills\lb-setup` (`(Get-Item $env:USERPROFILE\.claude\skills\lb-setup).LinkType` prints `Junction`), the clone has no `skills\lb-setup\assets`, and `$env:USERPROFILE\.config\launchbridge\global\generated\` holds regular files.
+3. **Back to copy.** `launchbridge --scope global --agent claude --skills lb-setup --method copy --yes` exits 0, `lb-setup` is a real folder again, and the clone's `skills\lb-setup` is still all there.
+4. **Preparing the project.** With `$S = "$env:USERPROFILE\.claude\skills\lb-setup\scripts"`, run `python -I "$S\bootstrap_workspace.py" mode "$env:TEMP\lb-check"` (prints `"mode": "global"`), then `python -I "$S\bootstrap_workspace.py" init "$env:TEMP\lb-check"` (exits 0, creates `.lb_workspace\` and `CLAUDE.md`), then `python -I "$S\venv_identity.py" deps "$env:TEMP\lb-check"` and `python -I "$S\verify_integrity.py" --global "$env:TEMP\lb-check"` (both exit 0). `python -I "$S\bootstrap_workspace.py" check "$env:USERPROFILE"` exits 1.
+5. **Update.** `launchbridge update` from any folder reports the global install as up to date.
+
+Remove the scratch project and run `launchbridge --scope global` again to restore your own selection afterwards.
+
 Then set the release version, the same in every file:
 
 - `version.txt` (first token on the first line; the installer reads it)

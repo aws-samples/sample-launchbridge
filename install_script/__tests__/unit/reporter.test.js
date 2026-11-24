@@ -90,6 +90,52 @@ describe('Reporter Module', () => {
             );
         });
 
+        it('lists each skills folder once with the agents that use it', () => {
+            displaySummary({
+                agents: ['codex', 'pi', 'kiro'],
+                scope: 'global',
+                method: 'copy',
+                sourcePath: '/src',
+                skills: ['lb-setup'],
+                targets: [
+                    { agent: 'codex', path: '/home/u/.agents/skills' },
+                    { agent: 'pi', path: '/home/u/.agents/skills' },
+                    {
+                        agent: 'kiro',
+                        path: '/home/u/.kiro/skills',
+                        realPath: '/home/u/dotfiles/kiro/skills',
+                    },
+                ],
+            });
+            const output = consoleOutput.join('\n');
+
+            assert.ok(output.includes('/home/u/.agents/skills (Codex, Pi)'));
+            assert.ok(
+                output.includes(
+                    '/home/u/.kiro/skills → /home/u/dotfiles/kiro/skills (Kiro)'
+                )
+            );
+            assert.ok(
+                output.includes('lb-setup creates .lb_workspace'),
+                'A global install says it leaves the repository alone'
+            );
+        });
+
+        it('does not describe repository setup for a local install', () => {
+            displaySummary({
+                agents: ['claude'],
+                scope: 'local',
+                method: 'copy',
+                sourcePath: '/src',
+                skills: ['lb-setup'],
+                targets: [{ agent: 'claude', path: '/repo/.claude/skills' }],
+            });
+            const output = consoleOutput.join('\n');
+
+            assert.ok(output.includes('/repo/.claude/skills (Claude Code)'));
+            assert.ok(!output.includes('lb-setup creates .lb_workspace'));
+        });
+
         it('should handle empty skills array', () => {
             const selections = {
                 agents: ['claude'],

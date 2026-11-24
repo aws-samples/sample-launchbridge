@@ -46,6 +46,10 @@ export async function removePath(targetPath) {
  * @param {boolean} [options.yes] - Non-interactive run: list orphans, remove nothing
  * @param {(orphans: string[], dir: string) => Promise<{action: string, names?: string[]}>} options.prompt
  * @param {(message: string) => void} [options.onWarn]
+ * @param {(dir: string) => Promise<{ok: boolean, reason?: string}>} [options.checkDirectory]
+ *     The check the skills directory must pass before it is scanned; default
+ *     checkSkillsDirectory inside `targetRepository` (a global install passes
+ *     checkGlobalSkillsDirectory)
  * @returns {Promise<{action: 'none' | 'skip' | 'cancel' | 'remove' | 'refused', removed: string[]}>}
  */
 export async function cleanupOrphanSkills({
@@ -56,11 +60,9 @@ export async function cleanupOrphanSkills({
     yes = false,
     prompt,
     onWarn = () => {},
+    checkDirectory = (dir) => checkSkillsDirectory(dir, targetRepository),
 }) {
-    const dirCheck = await checkSkillsDirectory(
-        baseTargetPath,
-        targetRepository
-    );
+    const dirCheck = await checkDirectory(baseTargetPath);
     if (!dirCheck.ok) {
         onWarn(
             `Not scanning ${baseTargetPath} for orphans: ${dirCheck.reason}`

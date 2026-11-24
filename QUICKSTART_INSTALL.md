@@ -26,7 +26,7 @@ Before you start, make sure you have:
 npm install -g github:aws-samples/sample-launchbridge
 ```
 
-This installs the `launchbridge` command. The first time you run `launchbridge` in a project (Step 2), it clones LaunchBridge into `~/.launchbridge`, and every later install and `launchbridge update` uses that one clone. It tracks `main` and doesn't verify release signatures; use the clone below if you need that. If you switch Node versions with nvm, run the command again under the new version. See the README's [Option A](README.md#option-a-install-the-command-with-npm-recommended).
+This installs the `launchbridge` command. The first time you run `launchbridge` (Step 2), it clones LaunchBridge into `~/.launchbridge`, and every later install and `launchbridge update` uses that one clone. It tracks `main` and doesn't verify release signatures; use the clone below if you need that. If you switch Node versions with nvm, run the command again under the new version. See the README's [Option A](README.md#option-a-install-the-command-with-npm-recommended).
 
 ### Alternative: clone the repository (development or signed releases)
 
@@ -46,23 +46,25 @@ Clone the repository rather than downloading it as a ZIP: updates need the `.git
 
 ---
 
-## Step 2: Install skills into your project
+## Step 2: Install the skills
 
-Navigate to the repository you want to add LaunchBridge to, then run the installer:
+Run the installer. For the default global install, run it from any folder; for a local install, run it in the repository you want to add LaunchBridge to:
 
 ```bash
-cd /path/to/your-project
 launchbridge
 ```
 
 The installer will walk you through a short set of prompts:
 
 1. **Agent** — select your coding agent (e.g. Kiro, Claude Code)
-2. **Install method** — choose `copy` (recommended for Kiro) or `symlink`
-3. **Skills** — select which skills to install (select all to get the full suite). This includes the native LaunchBridge skills plus the optional AI skill bundles from the ai-skills library: **AI Spec-Driven Development** (the SDD workflow `/ai-create → /ai-research → /ai-plan → /ai-implement → /ai-archive` + the `ai-workflow` orchestrator), **AI Architecture Decisions**, **AI Agent Context**, **AI Development Process**, **AI Prose Documents** and **AI Software Documentation**.
-4. **Confirm** — review the summary and confirm
+2. **Scope** — **Global** (default) installs the skills in your agent's user-level folder (for example `~/.claude/skills`, or `~/.agents/skills` for Codex), for every project, and changes no repository. **Local** installs them into the current repository only, which then carries its own copy.
+3. **Install method** — choose `copy`, or `symlink` to link each skill folder to the LaunchBridge clone so `launchbridge update` changes them in place
+4. **Skills** — select which skills to install (select all to get the full suite). This includes the native LaunchBridge skills plus the optional AI skill bundles from the ai-skills library: **AI Spec-Driven Development** (the SDD workflow `/ai-create → /ai-research → /ai-plan → /ai-implement → /ai-archive` + the `ai-workflow` orchestrator), **AI Architecture Decisions**, **AI Agent Context**, **AI Development Process**, **AI Prose Documents** and **AI Software Documentation**.
+5. **Confirm** — review the summary and confirm
 
 When it finishes, you'll see a success banner and a note to run `lb-setup`.
+
+For scripted installs, `--scope global|local` skips the scope prompt; see [Non-Interactive CLI Flags](docs/USER_GUIDE.md#non-interactive-cli-flags).
 
 ---
 
@@ -79,6 +81,8 @@ or
 ```
 Initialize LaunchBridge for this project
 ```
+
+With a global install, do this in each project you want to use LaunchBridge in. The first run in a project checks that the folder is safe to prepare, then creates `.lb_workspace/` there.
 
 `lb-setup` will:
 

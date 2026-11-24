@@ -41,7 +41,7 @@ python3 -I "<skills folder>/lb-setup/scripts/lb_guard.py" check "<project root>"
 
 Then start `.venv_lb`'s Python only through the guard's `exec`: `python3 -I "<skills folder>/lb-setup/scripts/lb_guard.py" exec "<project root>" -- ARGS` checks the venv again and runs `.venv_lb`'s Python with `ARGS`, with its bytecode cache outside the repository; it runs nothing if a check fails. Never run `.venv_lb/bin/python` (Windows: `.venv_lb\Scripts\python`) directly: it would load bytecode from `.venv_lb`, which the seal does not cover. If it prints `LaunchBridge warning: this Python may import files that came with the repository`, stop before relying on the result and show the user the warning: the files it lists are tracked by git where the skill's Python imports from, so a pull could have changed them. Continue only once the user has reviewed them.
 
-`<skills folder>` is the folder this skill is installed in, one level up (for example `.claude/skills`); on Windows use `py -3 -I`. A `.venv_lb` that arrived with the repository, or that a `git pull` or an unpacked archive added a file to, would run that code with the user's AWS credentials. Never install anything into `.venv_lb`.
+`<skills folder>` is the folder this skill is installed in, one level up (for example `.claude/skills` in the repository, or `~/.claude/skills` for a global install); on Windows use `py -3 -I`. A `.venv_lb` that arrived with the repository, or that a `git pull` or an unpacked archive added a file to, would run that code with the user's AWS credentials. Never install anything into `.venv_lb`.
 
 ## Error Handling
 

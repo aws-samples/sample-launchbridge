@@ -396,6 +396,39 @@ export function buildPyprojectContent(
 }
 
 /**
+ * The two python_deps files for the selected skills: the scoped
+ * pyproject.toml, and the frozen constraints.txt it is always installed with.
+ * A global install writes them into lb-setup's generated assets, and lb-setup
+ * copies them into each repository it prepares.
+ *
+ * @param {string} sourcePath - Root of the launchbridge source repo
+ * @param {string[]} selectedSkills
+ * @returns {{ pyproject: string, constraints: Buffer }}
+ * @throws {Error} When project_dependencies/constraints.txt is missing
+ */
+export function buildPythonDepsFiles(sourcePath, selectedSkills = []) {
+    const constraintsPath = safePathJoin(
+        sourcePath,
+        'project_dependencies',
+        'constraints.txt'
+    );
+    if (!fsSync.existsSync(constraintsPath)) {
+        throw new Error(
+            'project_dependencies/constraints.txt is missing from the LaunchBridge source. ' +
+                'Restore it (git checkout -- project_dependencies/constraints.txt) and run the installer again.'
+        );
+    }
+    return {
+        pyproject: buildPyprojectContent(
+            selectedSkills,
+            readRequiresPython(sourcePath),
+            readDependenciesFromToml(sourcePath)
+        ),
+        constraints: fsSync.readFileSync(constraintsPath),
+    };
+}
+
+/**
  * Writes the scoped pyproject.toml to .lb_workspace/config/python_deps/pyproject.toml
  * in the target repository. The python_deps/ subdirectory is a self-contained
  * installable package, installed with its constraints:

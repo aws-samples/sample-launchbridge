@@ -8,12 +8,115 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import inquirer from 'inquirer';
 import {
     promptForAgents,
+    promptForScope,
+    resolveScope,
     promptForConfirmation,
     promptForConflictResolution,
 } from '../../lib/promptManager.js';
 
 // Mock inquirer
 vi.mock('inquirer');
+
+describe('promptForScope', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        vi.spyOn(console, 'log').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it('defaults to Global and lists it first', async () => {
+        inquirer.prompt.mockResolvedValueOnce({ scope: 'global' });
+
+        const result = await promptForScope(['claude']);
+
+        expect(result).toBe('global');
+        const config = inquirer.prompt.mock.calls[0][0][0];
+        expect(config.type).toBe('select');
+        expect(config.default).toBe('global');
+        expect(config.choices.map((c) => c.value)).toEqual(['global', 'local']);
+    });
+
+    it('shows every selected agent’s folder for each scope', async () => {
+        inquirer.prompt.mockResolvedValueOnce({ scope: 'local' });
+
+        expect(await promptForScope(['claude', 'codex', 'kiro'])).toBe('local');
+
+        const [globalChoice, localChoice] =
+            inquirer.prompt.mock.calls[0][0][0].choices;
+        expect(globalChoice.name).toContain(
+            '~/.claude/skills, ~/.agents/skills, ~/.kiro/skills'
+        );
+        expect(localChoice.name).toContain(
+            './.claude/skills, ./.codex/skills, ./.kiro/skills'
+        );
+    });
+
+    it('names a folder agents share once', async () => {
+        inquirer.prompt.mockResolvedValueOnce({ scope: 'global' });
+
+        await promptForScope(['codex', 'pi', 'other']);
+
+        const [globalChoice, localChoice] =
+            inquirer.prompt.mock.calls[0][0][0].choices;
+        expect(globalChoice.name.match(/~\/\.agents\/skills/g)).toHaveLength(1);
+        expect(localChoice.name).toContain('./.codex/skills, ./.agents/skills');
+        expect(localChoice.name.match(/\.agents\/skills/g)).toHaveLength(1);
+    });
+
+    it('shows Claude Code’s folders when no agent is given', async () => {
+        inquirer.prompt.mockResolvedValueOnce({ scope: 'global' });
+
+        await promptForScope();
+
+        const [globalChoice] = inquirer.prompt.mock.calls[0][0][0].choices;
+        expect(globalChoice.name).toContain('~/.claude/skills');
+    });
+
+    it('says when this folder or the home folder already has an install', async () => {
+        inquirer.prompt.mockResolvedValueOnce({ scope: 'global' });
+
+        await promptForScope(['kiro'], {
+            localInstall: true,
+            globalInstall: true,
+        });
+
+        const printed = console.log.mock.calls.flat().join('\n');
+        expect(printed).toContain('local LaunchBridge install');
+        expect(printed).toContain('global LaunchBridge install');
+    });
+});
+
+describe('resolveScope', () => {
+    it('uses --scope when it is given', async () => {
+        const prompt = vi.fn();
+        expect(await resolveScope({ scope: 'local', yes: true }, prompt)).toBe(
+            'local'
+        );
+        expect(
+            await resolveScope({ scope: 'global', yes: false }, prompt)
+        ).toBe('global');
+        expect(prompt).not.toHaveBeenCalled();
+    });
+
+    it('installs globally for --yes without --scope, without asking', async () => {
+        const prompt = vi.fn();
+        expect(await resolveScope({ scope: null, yes: true }, prompt)).toBe(
+            'global'
+        );
+        expect(prompt).not.toHaveBeenCalled();
+    });
+
+    it('asks when neither flag decides', async () => {
+        const prompt = vi.fn().mockResolvedValue('local');
+        expect(await resolveScope({ scope: null, yes: false }, prompt)).toBe(
+            'local'
+        );
+        expect(prompt).toHaveBeenCalledTimes(1);
+    });
+});
 
 describe('promptForAgents', () => {
     beforeEach(() => {
@@ -217,6 +320,21 @@ describe('promptForConflictResolution', () => {
 
         expect(console.log).toHaveBeenCalledWith(
             expect.stringContaining('my-awesome-skill')
+        );
+    });
+
+    it('names the existing folder, so a run for several agents says which one', async () => {
+        inquirer.prompt.mockResolvedValueOnce({ resolution: 'skip' });
+
+        await promptForConflictResolution(
+            'lb-setup',
+            '/home/me/.claude/skills/lb-setup'
+        );
+
+        expect(console.log).toHaveBeenCalledWith(
+            expect.stringContaining(
+                '"lb-setup" already exists at /home/me/.claude/skills/lb-setup.'
+            )
         );
     });
 

@@ -7,6 +7,7 @@
  */
 
 import fs from 'fs/promises';
+import path from 'path';
 import { isPathWithin } from './pathSanitizer.js';
 
 /** Advice appended to permission errors. */
@@ -14,24 +15,46 @@ export const PERMISSION_HINT =
     "Check that you own the directory and can write to it. Don't run the installer with sudo or as Administrator: the files it creates would be owned by that account.";
 
 /**
- * Creates a directory structure with symlinked files from source to target.
- * Creates real directories but symlinks individual files, allowing tools
- * that don't follow directory symlinks to still access the content.
+ * How a skill folder is installed: `link`, one link to its source folder (a
+ * symlink install), or `copy`. A folder the installer writes files of its own
+ * into (an AI skill's SKILL.md for every agent but Claude Code) is copied in
+ * a symlink install too: through a link, those files would be written into
+ * the source.
  *
- * NOTE: Kiro IDE's tool validation rejects symlinked files (lstat sees
- * "symlink" not "file"), and directory-level symlinks are skipped by skill
- * discovery (Dirent.isDirectory() returns false for symlinks). Users
- * hitting this should use copy mode as a workaround.
- * See: https://github.com/kirodotdev/Kiro/issues/6401
+ * @param {'symlink' | 'copy'} method - The install method
+ * @param {Map<string, Buffer> | undefined} [ownFiles] - The files the
+ *     installer writes into this agent's copy (agentFilesFor)
+ * @returns {'link' | 'copy'}
+ */
+export function skillLayout(method, ownFiles) {
+    return method === 'symlink' && !(ownFiles && ownFiles.size > 0)
+        ? 'link'
+        : 'copy';
+}
+
+/**
+ * Links a skill folder to its source folder: one link for the whole folder,
+ * so the installed skill holds whatever the source folder holds, including
+ * files the source gains later. On Windows the link is a junction, which
+ * needs neither Developer Mode nor an Administrator shell.
  *
- * @param {string} source - Source path (the skill directory to link to)
- * @param {string} target - Target path (where the structure will be created)
+ * Codex skips a skill whose SKILL.md is a link but loads a linked skill
+ * folder (openai/codex#15844); Claude Code and Kiro load linked folders too.
+ *
+ * @param {string} source - The skill's source folder
+ * @param {string} target - Where the link is made (must not exist)
+ * @param {{ platform?: string }} [options] - The platform the link is made
+ *     for (default `process.platform`; tests pass `win32`)
  * @returns {Promise<void>}
- * @throws {Error} If target already exists or symlink creation fails
+ * @throws {Error} If target already exists or the link can't be made
  *
  * Requirements: 3.2, 7.2, 7.4, 9.3
  */
-export async function createSymlink(source, target) {
+export async function createSymlink(
+    source,
+    target,
+    { platform = process.platform } = {}
+) {
     // Check if target already exists
     try {
         await fs.lstat(target);
@@ -61,88 +84,36 @@ export async function createSymlink(source, target) {
         }
     }
 
-    // Create directory structure with symlinked files
-    await createSymlinkDirectory(source, target);
-}
-
-/**
- * Recursively creates a directory structure with symlinked files.
- * Creates real directories but symlinks individual files.
- *
- * @param {string} source - Source directory path
- * @param {string} target - Target directory path
- * @returns {Promise<void>}
- */
-async function createSymlinkDirectory(source, target) {
-    // Get source directory stats to preserve permissions
-    const sourceStats = await fs.stat(source);
-
-    // Create target directory with same permissions as source
+    // A junction's target must be absolute; an absolute link also keeps
+    // pointing at the source when the skills folder is reached another way.
+    const absoluteSource = path.resolve(source);
     try {
-        // Permission bits only: setuid, setgid and sticky bits are not copied.
-        await fs.mkdir(target, { mode: sourceStats.mode & 0o777 });
-    } catch (error) {
-        if (error.code === 'EACCES' || error.code === 'EPERM') {
-            throw new Error(
-                `Permission denied: Unable to create directory "${target}". ` +
-                    PERMISSION_HINT
-            );
+        if (!(await fs.stat(absoluteSource)).isDirectory()) {
+            throw new Error(`Source path is not a directory: "${source}".`);
         }
-        throw new Error(
-            `Failed to create directory "${target}": ${error.message}`
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            throw new Error(`Source path does not exist: "${source}".`);
+        }
+        throw error;
+    }
+
+    try {
+        await fs.symlink(
+            absoluteSource,
+            target,
+            platform === 'win32' ? 'junction' : 'dir'
         );
-    }
-
-    // Read directory contents
-    const entries = await fs.readdir(source, { withFileTypes: true });
-
-    // Process each entry
-    for (const entry of entries) {
-        const sourcePath = `${source}/${entry.name}`;
-        const targetPath = `${target}/${entry.name}`;
-
-        if (entry.isDirectory()) {
-            // Recursively create subdirectory structure
-            await createSymlinkDirectory(sourcePath, targetPath);
-        } else if (entry.isFile() || entry.isSymbolicLink()) {
-            // Symlink individual files
-            await createFileSymlink(sourcePath, targetPath);
-        }
-        // Skip other types (sockets, devices, etc.)
-    }
-}
-
-/**
- * Creates a symbolic link for a single file.
- *
- * @param {string} source - Source file path
- * @param {string} target - Target symlink path
- * @returns {Promise<void>}
- */
-async function createFileSymlink(source, target) {
-    try {
-        await fs.symlink(source, target, 'file');
     } catch (error) {
-        // Handle Windows symlink permission issues
-        if (error.code === 'EPERM' && process.platform === 'win32') {
-            throw new Error(
-                `Symlink creation failed due to insufficient permissions. ` +
-                    `On Windows, you need to either:\n` +
-                    `  1. Enable Developer Mode in Windows Settings > Update & Security > For developers\n` +
-                    `  2. Install with --method copy instead, which needs no symlinks\n` +
-                    `Original error: ${error.message}`
-            );
-        }
-
-        // Handle other permission errors
         if (error.code === 'EACCES' || error.code === 'EPERM') {
             throw new Error(
                 `Permission denied: Unable to create symlink at "${target}". ` +
-                    PERMISSION_HINT
+                    PERMISSION_HINT +
+                    (platform === 'win32'
+                        ? ' Or install with --method copy, which needs no links.'
+                        : '')
             );
         }
-
-        // Re-throw other errors with context
         throw new Error(
             `Failed to create symlink from "${source}" to "${target}": ${error.message}`
         );
