@@ -42,9 +42,9 @@ Run these from a clean clone of the commit you intend to release:
 npm run setup
 npm test
 uv run --no-project --python 3.12 \
-  --with numpy==2.5.5 --with boto3==1.44.4 --with munkres==1.1.4 \
-  --with pydantic==2.14.3 --with pytest==9.2.0 --with pyyaml==6.0.3 \
-  --with mcp==2.1.1 --with plotly==7.1.0 --with pandas==3.1.1 --with pathspec==1.1.1 --with chardet==7.7.0 \
+  --with numpy==2.5.5 --with boto3==1.44.11 --with munkres==1.1.4 \
+  --with pydantic==2.14.4 --with pytest==9.2.0 --with pyyaml==6.0.4 \
+  --with mcp==2.3.0 --with plotly==7.1.0 --with pandas==3.1.1 --with pathspec==1.1.1 --with chardet==7.7.0 \
   pytest tests/unit
 ./run_lint.sh --check
 git grep -n -E "<org>|<release-signing" -- . ':!RELEASING.md'   # must print nothing
