@@ -78,6 +78,32 @@ export function describeTargets(targets) {
 }
 
 /**
+ * Agents whose older releases don't load a skill folder that is a link
+ * (kirodotdev/Kiro#6401, cline/cline#11113).
+ */
+const SKIP_LINKED_FOLDERS = ['kiro', 'cline'];
+
+/**
+ * The warning for a symlink install for agents whose older releases don't
+ * load a skill folder that is a link, or null when it installs for none.
+ *
+ * @param {'symlink' | 'copy'} method
+ * @param {string[]} agents
+ * @returns {string | null}
+ */
+export function linkedFoldersWarning(method, agents) {
+    if (method !== 'symlink') return null;
+    const names = SKIP_LINKED_FOLDERS.filter((agent) =>
+        agents.includes(agent)
+    ).map((agent) => AGENTS[agent].displayName);
+    if (names.length === 0) return null;
+    return (
+        `Older ${names.join(' and ')} releases don't load skill folders that are links, which is what a symlink install makes. ` +
+        `If the skills don't appear in ${names.join(' or ')}, install again with --method copy.`
+    );
+}
+
+/**
  * Displays progress for a skill installation.
  * @param {string} skillName
  * @param {import('./promptManager.js').Agent} agent
@@ -178,7 +204,7 @@ export function getExitCode(report) {
  * @property {import('./lifecycleOrchestrator.js').LifecycleScenario} scenario
  * @property {string[]} installed - Skills freshly installed (new additions)
  * @property {string[]} updated - Skills overwritten with new content (status reset)
- * @property {string[]} removed - Skills removed as orphans
+ * @property {string[]} removed - Skills removed as orphans, one per folder removed
  * @property {string[]} unchanged - Skills with no changes (skipped)
  * @property {string[]} failed - Skills that failed to install
  * @property {string[]} warnings - Non-fatal warnings
@@ -199,14 +225,16 @@ export function getExitCode(report) {
  * @param {Object[]} results.failed - Skills that failed to install
  * @param {Object[]} results.skipped - Skills that were skipped
  * @param {import('./lifecycleOrchestrator.js').LifecycleDecision} decision - The lifecycle decision
- * @param {{ scope?: 'local' | 'global' }} [options] - A global install changes no
- *   repository, so the decision's setup_status resets are not reported for it
+ * @param {{ scope?: 'local' | 'global', removed?: string[] }} [options] - A
+ *   global install changes no repository, so the decision's setup_status
+ *   resets are not reported for it. `removed`: the skill of each folder the
+ *   run removed (default: the decision's skillsToRemove)
  * @returns {LifecycleReport}
  */
 export function buildLifecycleReport(
     results,
     decision,
-    { scope = 'local' } = {}
+    { scope = 'local', removed: removedFolders } = {}
 ) {
     if (scope === 'global') {
         decision = {
@@ -235,8 +263,8 @@ export function buildLifecycleReport(
         failed.push(result.skillName);
     }
 
-    // Removed and unchanged come directly from the decision
-    const removed = [...decision.skillsToRemove];
+    // Removed: what the run removed, when it says; unchanged: the decision's
+    const removed = [...(removedFolders ?? decision.skillsToRemove)];
     const unchanged = [...decision.skillsUnchanged];
 
     // Warnings from the decision
@@ -305,6 +333,7 @@ function lbSetupBanner(scope) {
  * - incremental_update: counts of installed/updated/removed/unchanged + reset reasons
  * - release_upgrade: version header + counts + reset reasons
  * - interrupt_recovery: recovery header + normal counts
+ * - switch_from_global: switch header + counts + reset reasons
  *
  * @param {LifecycleReport} report
  */
@@ -357,12 +386,22 @@ export function displayLifecycleReport(report) {
             spacer();
             break;
 
+        case 'switch_from_global':
+            console.log(
+                chalk.bold.cyan(
+                    '  Switching this repository from the global LaunchBridge install to a local one'
+                )
+            );
+            spacer();
+            break;
+
         case 'incremental_update':
         default:
             break;
     }
 
-    // Counts line for incremental_update, release_upgrade, interrupt_recovery
+    // Counts line for incremental_update, release_upgrade, interrupt_recovery,
+    // switch_from_global
     const parts = [];
     if (report.installed.length > 0) {
         parts.push(chalk.green(`${report.installed.length} installed`));

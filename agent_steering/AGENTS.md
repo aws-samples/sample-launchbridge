@@ -511,6 +511,7 @@ All skill artifacts live under `.lb_workspace/` at the project root. This keeps 
 - Skill flows indicate natural progressions. Follow the handoff type declared by each skill (`automatic` vs `suggested`) to determine whether to proceed directly or ask the user first.
 - The skills suite is agent-agnostic. It works with any AI coding agent (Kiro, Claude Code, Codex, etc.) without relying on agent-specific APIs or tooling.
 - All skill artifacts live under `.lb_workspace/` to keep the target codebase clean.
+- **Never write into an installed skill's own folder** (`<skills folder>/<name>/`), and never ask the user to. In a global install it serves every project, and in a symlink install it is a link into the LaunchBridge clone, so a file put there reaches every project, and lb-setup's integrity check then reports the skill as modified. Anything the user provides for a skill belongs in the project, where the skill's instructions say.
 - **Files that govern the agent are tracked in git; keep them that way.** Most of
   `.lb_workspace/` is ignored, with three deliberate exceptions:
   `.lb_workspace/guardrails/`, `.lb_workspace/config/config-prompt-store.yaml`, and

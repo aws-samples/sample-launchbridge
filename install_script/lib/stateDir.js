@@ -96,8 +96,18 @@ export const GLOBAL_MANIFEST = 'manifest.json';
 /** The LaunchBridge source the global install came from. */
 export const GLOBAL_INSTALL_SOURCE = 'install_source.json';
 
+/**
+ * The skill folders a global install has started on and not finished
+ * (writeGlobalPending).
+ */
+export const GLOBAL_PENDING = 'pending.json';
+
 /** File names writeGlobalState accepts. */
-const GLOBAL_STATE_FILES = new Set([GLOBAL_MANIFEST, GLOBAL_INSTALL_SOURCE]);
+const GLOBAL_STATE_FILES = new Set([
+    GLOBAL_MANIFEST,
+    GLOBAL_INSTALL_SOURCE,
+    GLOBAL_PENDING,
+]);
 
 /**
  * The global install's state directory, `<state base>/launchbridge/global`,
@@ -126,7 +136,7 @@ export function globalGeneratedDir() {
 /**
  * Writes one of the global state files atomically (a temporary file renamed
  * into place), readable by the user only, in a folder only the user can enter.
- * @param {string} name - GLOBAL_MANIFEST or GLOBAL_INSTALL_SOURCE
+ * @param {string} name - GLOBAL_MANIFEST, GLOBAL_INSTALL_SOURCE or GLOBAL_PENDING
  * @param {string} text
  * @returns {Promise<string>} The file written
  */
@@ -192,4 +202,50 @@ export async function recordGlobalInstallSource(sourcePath) {
         GLOBAL_INSTALL_SOURCE,
         JSON.stringify({ sourcePath: path.resolve(sourcePath) }) + '\n'
     );
+}
+
+/**
+ * Lists the skill folders a global install has started to create or replace,
+ * as keys relative to the home directory (installedTargets.js targetKey). The
+ * install adds each folder before it touches it, and keeps those it did not
+ * finish listed once its record is written, so the next run still knows which
+ * folders are LaunchBridge's.
+ * @param {Iterable<string>} targets
+ */
+export async function writeGlobalPending(targets) {
+    await writeGlobalState(
+        GLOBAL_PENDING,
+        JSON.stringify({ targets: [...new Set(targets)].sort() }, null, 2) +
+            '\n'
+    );
+}
+
+/**
+ * The skill folders a global install that did not finish listed in
+ * pending.json, or null when there is no such file.
+ * @returns {Promise<Set<string> | null>}
+ * @throws {Error} When the file can't be read or is not such a list: the
+ *     folders it lists would otherwise be taken for someone else's
+ */
+export async function readGlobalPending() {
+    let text;
+    try {
+        text = await fs.readFile(
+            path.join(globalStateDir(), GLOBAL_PENDING),
+            'utf8'
+        );
+    } catch (err) {
+        if (err.code === 'ENOENT') return null;
+        throw err;
+    }
+    const { targets } = JSON.parse(text) ?? {};
+    if (!Array.isArray(targets)) {
+        throw new Error('it has no "targets" list');
+    }
+    return new Set(targets.filter((key) => typeof key === 'string'));
+}
+
+/** Removes pending.json, once no folder it lists is left unfinished. */
+export async function removeGlobalPending() {
+    await fs.rm(path.join(globalStateDir(), GLOBAL_PENDING), { force: true });
 }

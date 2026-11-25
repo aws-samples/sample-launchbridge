@@ -16,10 +16,16 @@
  * (`__pycache__/`, `*.pyc`) is removed first: Python would run it in place of
  * the scripts, and it is never part of what is installed. A linked folder is
  * never changed: it is the LaunchBridge source itself.
+ *
+ * A folder an older symlink install made of one link per file is replaced by
+ * a link to its source folder only when it holds nothing LaunchBridge did not
+ * put there (entriesNotInstalled): anything else in it would be deleted with
+ * it.
  */
 
 import fs from 'fs/promises';
 import path from 'path';
+import { isPathWithin } from './pathSanitizer.js';
 
 /** Names that are never compared (the source may hold them; nothing installs them). */
 const IGNORED = new Set(['.DS_Store']);
@@ -112,6 +118,93 @@ export async function installedLayout(targetPath) {
     if (stats.isSymbolicLink()) return 'link';
     if (!stats.isDirectory()) return 'other';
     return (await linkTargets(targetPath)).length > 0 ? 'per-file' : 'copy';
+}
+
+/**
+ * Where a link points, resolved through links, without needing its target to
+ * exist: a link whose target is gone resolves through its nearest existing
+ * ancestor.
+ * @param {string} link
+ * @returns {Promise<string>}
+ */
+async function resolveLink(link) {
+    try {
+        return await fs.realpath(link);
+    } catch {
+        let existing = path.resolve(
+            path.dirname(link),
+            await fs.readlink(link)
+        );
+        const rest = [];
+        for (;;) {
+            try {
+                return path.join(await fs.realpath(existing), ...rest);
+            } catch {
+                const parent = path.dirname(existing);
+                if (parent === existing) return path.join(existing, ...rest);
+                rest.unshift(path.basename(existing));
+                existing = parent;
+            }
+        }
+    }
+}
+
+/**
+ * What a skill folder laid out the way LaunchBridge 1.2.0 installed it (a
+ * real folder whose files are links; installedLayout `per-file`) holds besides
+ * what LaunchBridge put there, so that replacing it with a link to its source
+ * folder loses nothing when the list is empty.
+ *
+ * LaunchBridge put there: folders, links that resolve inside the LaunchBridge
+ * source (a link whose target is gone counts when the target was inside it),
+ * and regular files at the paths the installer writes itself for the agent
+ * (`ownFiles`), whatever their bytes. Python bytecode (`__pycache__/`,
+ * `*.pyc`) and `.DS_Store` are not counted either. Every other entry is
+ * listed. No link is followed.
+ *
+ * @param {string} targetPath - The installed skill folder (a real folder)
+ * @param {string} sourceRoot - The LaunchBridge source
+ * @param {{ ownFiles?: Iterable<string> }} [options] - POSIX relative paths
+ *   of the files the installer writes into this agent's copy of the skill (an
+ *   AI skill's SKILL.md, and Codex's agents/openai.yaml: the keys of
+ *   agentFilesFor); none for a native skill
+ * @returns {Promise<string[]>} The entries LaunchBridge did not install, by
+ *   POSIX path relative to the folder, sorted; empty when there are none
+ * @throws {Error} When `targetPath` is not a real folder, or can't be read
+ */
+export async function entriesNotInstalled(
+    targetPath,
+    sourceRoot,
+    { ownFiles = [] } = {}
+) {
+    const stats = await fs.lstat(targetPath);
+    if (stats.isSymbolicLink() || !stats.isDirectory()) {
+        throw new Error(`${targetPath} is not a folder`);
+    }
+    const root = await fs.realpath(sourceRoot);
+    const own = new Set(ownFiles);
+    const found = [];
+    const walk = async (dir) => {
+        for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+            if (IGNORED.has(entry.name) || isBytecode(entry.name)) continue;
+            const full = path.join(dir, entry.name);
+            const rel = path
+                .relative(targetPath, full)
+                .split(path.sep)
+                .join('/');
+            if (entry.isSymbolicLink()) {
+                if (!isPathWithin(await resolveLink(full), root)) {
+                    found.push(rel);
+                }
+            } else if (entry.isDirectory()) {
+                await walk(full);
+            } else if (!(entry.isFile() && own.has(rel))) {
+                found.push(rel);
+            }
+        }
+    };
+    await walk(targetPath);
+    return found.sort();
 }
 
 /**

@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import inquirer from 'inquirer';
 import {
     promptForAgents,
+    defaultScope,
     promptForScope,
     resolveScope,
     promptForConfirmation,
@@ -87,6 +88,40 @@ describe('promptForScope', () => {
         expect(printed).toContain('local LaunchBridge install');
         expect(printed).toContain('global LaunchBridge install');
     });
+
+    it('defaults to Local in a folder with a local install, and says so', async () => {
+        inquirer.prompt.mockResolvedValueOnce({ scope: 'local' });
+
+        await promptForScope(['claude'], {
+            localInstall: true,
+            globalInstall: true,
+        });
+
+        const config = inquirer.prompt.mock.calls[0][0][0];
+        expect(config.default).toBe('local');
+        expect(config.choices[0].name).not.toContain('Recommended');
+        expect(console.log.mock.calls.flat().join('\n')).toContain(
+            'This folder already has a local LaunchBridge install, so Local is the default.'
+        );
+    });
+
+    it('defaults to Global, recommended, when only a global install exists', async () => {
+        inquirer.prompt.mockResolvedValueOnce({ scope: 'global' });
+
+        await promptForScope(['claude'], { globalInstall: true });
+
+        const config = inquirer.prompt.mock.calls[0][0][0];
+        expect(config.default).toBe('global');
+        expect(config.choices[0].name).toContain('(Recommended)');
+    });
+});
+
+describe('defaultScope', () => {
+    it('is Local in a folder with a local install, and Global elsewhere', () => {
+        expect(defaultScope({ localInstall: true })).toBe('local');
+        expect(defaultScope({ localInstall: false })).toBe('global');
+        expect(defaultScope()).toBe('global');
+    });
 });
 
 describe('resolveScope', () => {
@@ -106,6 +141,28 @@ describe('resolveScope', () => {
         expect(await resolveScope({ scope: null, yes: true }, prompt)).toBe(
             'global'
         );
+        expect(
+            await resolveScope({ scope: null, yes: true }, prompt, {
+                localInstall: false,
+                globalInstall: true,
+            })
+        ).toBe('global');
+        expect(prompt).not.toHaveBeenCalled();
+    });
+
+    it('updates the local install for --yes without --scope in a folder that has one', async () => {
+        const prompt = vi.fn();
+        expect(
+            await resolveScope({ scope: null, yes: true }, prompt, {
+                localInstall: true,
+                globalInstall: true,
+            })
+        ).toBe('local');
+        expect(
+            await resolveScope({ scope: 'global', yes: true }, prompt, {
+                localInstall: true,
+            })
+        ).toBe('global');
         expect(prompt).not.toHaveBeenCalled();
     });
 
@@ -193,6 +250,24 @@ describe('promptForAgents', () => {
         const promptConfig = inquirer.prompt.mock.calls[0][0][0];
         const kiroChoice = promptConfig.choices.find((c) => c.value === 'kiro');
         expect(kiroChoice.checked).toBe(true);
+    });
+
+    it('names the install the pre-checked agents come from', async () => {
+        const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+        inquirer.prompt
+            .mockResolvedValueOnce({ agents: ['kiro'] })
+            .mockResolvedValueOnce({ agents: ['codex'] });
+
+        await promptForAgents(['kiro', 'claude'], { from: 'local' });
+        await promptForAgents(['codex'], { from: 'global' });
+
+        const printed = log.mock.calls.flat().join('\n');
+        expect(printed).toContain(
+            "From this folder's local install: kiro, claude (pre-selected)"
+        );
+        expect(printed).toContain(
+            'From the global install: codex (pre-selected)'
+        );
     });
 });
 

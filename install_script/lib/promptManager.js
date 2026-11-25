@@ -36,21 +36,32 @@ const p = (question) => ({ prefix: '', ...question });
  * @property {string[]} skills - Selected skill names
  */
 
+/** The install record agents are pre-selected from, as the prompt names it. */
+const RECORD_NAMES = {
+    local: "this folder's local install",
+    global: 'the global install',
+};
+
 /**
  * Prompts the user to select agents.
  * If a manifest exists, pre-selects agents from it.
  * The user can always change the selection.
  *
  * @param {string[]|null} manifestAgents - Agents from version_manifest.json, or null if no manifest
+ * @param {{ from?: Scope }} [options] - Which install's record they come
+ *     from, named in the message
  * @returns {Promise<Agent[]>}
  */
-export async function promptForAgents(manifestAgents = null) {
+export async function promptForAgents(manifestAgents = null, { from } = {}) {
     const preSelected = manifestAgents ?? [];
 
     if (preSelected.length > 0) {
+        const names = stripControlCharacters(preSelected.join(', '));
         console.log(
             chalk.dim(
-                `  From previous install: ${preSelected.join(', ')} (pre-selected from version manifest)`
+                Object.hasOwn(RECORD_NAMES, from)
+                    ? `  From ${RECORD_NAMES[from]}: ${names} (pre-selected)`
+                    : `  From previous install: ${names} (pre-selected from version manifest)`
             )
         );
     }
@@ -92,9 +103,21 @@ function skillsDirsLabel(agents, scope, prefix) {
 }
 
 /**
- * Prompts the user to choose where the skills are installed. Global, the
- * default, puts them in each agent's user-level skills folder for every
- * project; Local puts them in the current repository.
+ * The scope used when none is chosen: Local, to update it, when the current
+ * folder has a local install; otherwise Global.
+ *
+ * @param {{ localInstall?: boolean }} [existing] - Whether the current folder
+ *     has a local install
+ * @returns {Scope}
+ */
+export function defaultScope({ localInstall = false } = {}) {
+    return localInstall ? 'local' : 'global';
+}
+
+/**
+ * Prompts the user to choose where the skills are installed. Global puts them
+ * in each agent's user-level skills folder for every project; Local puts them
+ * in the current repository. The default is defaultScope's.
  *
  * @param {Agent[]} [agents] - The selected agents; every one's folder is shown
  *     (Claude Code's when none is given)
@@ -109,7 +132,9 @@ export async function promptForScope(agents = [], existing = {}) {
 
     if (existing.localInstall) {
         console.log(
-            chalk.dim('  This folder already has a local LaunchBridge install.')
+            chalk.dim(
+                '  This folder already has a local LaunchBridge install, so Local is the default.'
+            )
         );
     }
     if (existing.globalInstall) {
@@ -121,10 +146,10 @@ export async function promptForScope(agents = [], existing = {}) {
             type: 'select',
             name: 'scope',
             message: 'Install the skills globally or into this repository?',
-            default: 'global',
+            default: defaultScope(existing),
             choices: [
                 {
-                    name: `Global - Skills installed to ${globalDir} and available in every project. The lb-setup skill prepares each project (Recommended)`,
+                    name: `Global - Skills installed to ${globalDir} and available in every project. The lb-setup skill prepares each project${existing.localInstall ? '' : ' (Recommended)'}`,
                     value: 'global',
                 },
                 {
@@ -138,17 +163,19 @@ export async function promptForScope(agents = [], existing = {}) {
 }
 
 /**
- * The install scope: the `--scope` flag; else Global for a `--yes` run, which
- * does not ask for anything it has a default for; else the scope prompt, whose
- * default is Global.
+ * The install scope: the `--scope` flag; else, for a `--yes` run, which does
+ * not ask for anything it has a default for, defaultScope's; else the scope
+ * prompt, whose default is the same.
  *
  * @param {{ scope?: Scope|null, yes?: boolean }} resolvedFlags
  * @param {() => Promise<Scope>} prompt
+ * @param {{ localInstall?: boolean }} [existing] - Whether the current folder
+ *     has a local install
  * @returns {Promise<Scope>}
  */
-export async function resolveScope(resolvedFlags, prompt) {
+export async function resolveScope(resolvedFlags, prompt, existing = {}) {
     if (resolvedFlags.scope) return resolvedFlags.scope;
-    if (resolvedFlags.yes) return 'global';
+    if (resolvedFlags.yes) return defaultScope(existing);
     return prompt();
 }
 

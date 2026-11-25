@@ -17,10 +17,11 @@ import fs from 'fs/promises';
 import fsSync from 'fs';
 import chalk from 'chalk';
 
-import { runVenvSetup } from './lib/venvSetup.js';
+import { buildPythonDepsFiles, runVenvSetup } from './lib/venvSetup.js';
 
 import {
     promptForAgents,
+    defaultScope,
     promptForScope,
     resolveScope,
     promptForSkillCategories,
@@ -53,8 +54,10 @@ import {
     getExitCode,
     buildLifecycleReport,
     displayLifecycleReport,
+    linkedFoldersWarning,
 } from './lib/reporter.js';
 import { decideUpdate, parseApplyCommit } from './lib/updateDecision.js';
+import { parseCLIFlags } from './lib/cliFlags.js';
 import { decideExistingSkillPath } from './lib/conflictDecision.js';
 import { removePath, cleanupOrphanSkills } from './lib/orphanCleanup.js';
 import { stripControlCharacters } from './lib/terminalText.js';
@@ -68,16 +71,25 @@ import {
 } from './lib/pathValidator.js';
 import {
     GLOBAL_MANIFEST,
+    GLOBAL_PENDING,
     globalGeneratedDir,
+    globalStateDir,
     readGlobalManifest,
+    readGlobalPending,
     recordGlobalInstallSource,
+    removeGlobalPending,
+    writeGlobalPending,
     writeGlobalState,
 } from './lib/stateDir.js';
 import { SKILL_REQUIRES_SETUP } from './lib/skillDiscovery.js';
 import {
+    ASSET_SOURCES,
     assetDigests,
     buildGlobalAssets,
+    folderHolds,
     globalAssetsMatch,
+    keepPreviousAssetFields,
+    preparedForGlobalInstall,
     writeGlobalAssets,
 } from './lib/globalAssets.js';
 import {
@@ -94,6 +106,7 @@ import {
     computeDependencySetHash,
 } from './lib/contentHash.js';
 import {
+    entriesNotInstalled,
     installedLayout,
     installedSkillMatches,
 } from './lib/installedContent.js';
@@ -102,6 +115,7 @@ import {
     targetKey,
     readInstalledTargets,
     namesUnder,
+    recordedOrphans,
 } from './lib/installedTargets.js';
 import {
     detectDeliveryMethod,
@@ -116,11 +130,15 @@ import {
     prepareHome,
 } from './lib/homeClone.js';
 import { determineLifecycle } from './lib/lifecycleOrchestrator.js';
+// Loaded before `launchbridge update` pulls: a module first loaded after the
+// pull would be the new release's, linked to this release's modules.
+import { runInstallSyncs, syncsIncomplete } from './lib/globalSync.js';
 import { applyStatusResets } from './lib/statusReset.js';
 import {
     parseSetupStatusContent,
     buildMarkdownTable,
 } from './lib/setupStatus.js';
+import { uncommittedSkillChanges } from './lib/sourceChanges.js';
 
 /**
  * Prints what an update would change before it is applied: the incoming
@@ -192,7 +210,10 @@ function displayUpdatePreview(preview) {
  * the commit a previous preview showed. `--yes` alone, or no terminal to ask
  * on, prints the preview and applies nothing.
  *
- * Exits 0 on success (including "declined"), 1 on failure.
+ * Exits 0 on success (including "declined"), 1 on failure: the update itself
+ * failed, or afterwards the global install could not be fully updated, this
+ * folder's local install was not updated because its workspace was refused,
+ * or the sync stopped with an error.
  */
 async function runUpdateCommand() {
     const { runUpdate } = await import('./lib/updater.js');
@@ -288,8 +309,8 @@ async function runUpdateCommand() {
     // has one: re-copy changed skills and regenerate the Python dependency
     // config where needed.
     spacer();
+    let incomplete = false;
     try {
-        const { runInstallSyncs } = await import('./lib/globalSync.js');
         const syncs = await runInstallSyncs(sourcePath, targetRepo, {
             step,
             success,
@@ -297,7 +318,11 @@ async function runUpdateCommand() {
             muted,
             spacer,
         });
-        if (!syncs.global.skippedNoManifest) {
+        incomplete = syncsIncomplete(syncs);
+        if (
+            !syncs.global.skippedNoManifest &&
+            !syncs.global.skippedOtherSource
+        ) {
             muted(
                 '  Repositories pick up the global changes the next time lb-setup runs in them.'
             );
@@ -331,54 +356,25 @@ async function runUpdateCommand() {
         }
     } catch (err) {
         warn(`Post-pull sync encountered an error: ${err.message}`);
+        incomplete = true;
     }
 
     spacer();
-    process.exit(0);
-}
-
-/**
- * Parses CLI flags from process.argv for non-interactive operation.
- *
- * Supported flags:
- *   --skills <list>   Comma-separated skill names, category names, or 'all'
- *   --agent <list>    Comma-separated agent names (e.g., kiro, claude)
- *   --scope <value>   'global' (default) or 'local'
- *   --method <value>  'copy' or 'symlink'
- *   --yes / -y        Auto-confirm all prompts
- *
- * @returns {{ skills: string|null, agent: string|null, scope: string|null, method: string|null, yes: boolean }}
- */
-function parseCLIFlags() {
-    const args = process.argv.slice(2);
-    const flags = {
-        skills: null,
-        agent: null,
-        scope: null,
-        method: null,
-        yes: false,
-    };
-    for (let i = 0; i < args.length; i++) {
-        if (args[i] === '--skills' && args[i + 1]) {
-            flags.skills = args[++i];
-        } else if (args[i] === '--agent' && args[i + 1]) {
-            flags.agent = args[++i];
-        } else if (args[i] === '--scope' && args[i + 1]) {
-            flags.scope = args[++i];
-        } else if (args[i] === '--method' && args[i + 1]) {
-            flags.method = args[++i];
-        } else if (args[i] === '--yes' || args[i] === '-y') {
-            flags.yes = true;
-        }
+    if (incomplete) {
+        uiError(
+            'Not every install could be brought up to date; see the warnings above.'
+        );
+        spacer();
+        process.exit(1);
     }
-    return flags;
+    process.exit(0);
 }
 
 /**
  * Validates CLI flag values and resolves them to usable selections.
  * Exits with code 1 and a clear error message if any flag value is invalid.
  *
- * @param {{ skills: string|null, agent: string|null, scope: string|null, method: string|null, yes: boolean }} flags
+ * @param {import('./lib/cliFlags.js').CLIFlags} flags - From parseCLIFlags
  * @param {import('./lib/skillDiscovery.js').Skill[]} availableSkills - Discovered skills from source
  * @param {import('./lib/skillDiscovery.js').SkillCategory[]} [categories] - Categories to resolve against (defaults to SKILL_CATEGORIES)
  * @returns {{ agents: string[]|null, scope: 'local'|'global'|null, method: string|null, skills: string[]|null, yes: boolean }}
@@ -397,7 +393,7 @@ function validateAndResolveFlags(
     };
 
     // Validate --scope
-    if (flags.scope) {
+    if (flags.scope !== null) {
         if (flags.scope !== 'global' && flags.scope !== 'local') {
             console.error(
                 `Invalid scope: '${flags.scope}'. Use 'global' or 'local'.`
@@ -426,7 +422,7 @@ function validateAndResolveFlags(
     }
 
     // Validate --method
-    if (flags.method) {
+    if (flags.method !== null) {
         if (flags.method !== 'copy' && flags.method !== 'symlink') {
             console.error(
                 `Invalid method: '${flags.method}'. Use 'copy' or 'symlink'.`
@@ -589,6 +585,13 @@ async function main() {
         return; // runUpdateCommand calls process.exit(), but return for clarity
     }
 
+    // CLI flags for non-interactive operation; `update` reads its own above.
+    const cliFlags = parseCLIFlags(process.argv.slice(2));
+    if (cliFlags.error) {
+        console.error(cliFlags.error);
+        process.exit(1);
+    }
+
     showLogo();
     console.log('This tool will help you install the LaunchBridge Skills\n');
 
@@ -633,10 +636,8 @@ async function main() {
     );
     const allCategories = [...SKILL_CATEGORIES, ...externalCategories];
 
-    // Parse CLI flags for non-interactive operation
-    const cliFlags = parseCLIFlags();
     const resolvedFlags = validateAndResolveFlags(
-        cliFlags,
+        cliFlags.flags,
         availableSkills,
         allCategories
     );
@@ -658,25 +659,38 @@ async function main() {
         ? await readManifest(targetRepository)
         : null;
     const globalManifest = await readGlobalManifest();
+    // A local install counts even where its workspace is refused (or not
+    // checked, for --scope global): Local stays the default there, and
+    // choosing it is refused with the reason.
+    const hasLocalInstall =
+        Boolean(localManifest) ||
+        fsSync.existsSync(
+            path.join(
+                targetRepository,
+                '.lb_workspace',
+                'config',
+                'version_manifest.json'
+            )
+        );
 
     // The agents prompt comes before the scope prompt, so it is pre-checked
-    // from the manifest of the scope given by flag, or else the default
-    // (global) scope's, falling back to this folder's local install.
+    // from the manifest of the scope given by flag, or else of the default
+    // scope: this folder's local install when it has one, else the global one.
+    const existingInstalls = {
+        localInstall: hasLocalInstall,
+        globalInstall: Boolean(globalManifest),
+    };
+    const agentsFrom = resolvedFlags.scope ?? defaultScope(existingInstalls);
     const manifestAgents =
-        (resolvedFlags.scope === 'local'
-            ? localManifest
-            : resolvedFlags.scope === 'global'
-              ? globalManifest
-              : (globalManifest ?? localManifest)
-        )?.agents ?? null;
+        (agentsFrom === 'local' ? localManifest : globalManifest)?.agents ??
+        null;
     const agents = resolvedFlags.agents
         ? resolvedFlags.agents
-        : await promptForAgents(manifestAgents);
-    const scope = await resolveScope(resolvedFlags, () =>
-        promptForScope(agents, {
-            localInstall: Boolean(localManifest),
-            globalInstall: Boolean(globalManifest),
-        })
+        : await promptForAgents(manifestAgents, { from: agentsFrom });
+    const scope = await resolveScope(
+        resolvedFlags,
+        () => promptForScope(agents, existingInstalls),
+        existingInstalls
     );
     if (scope === 'local' && !workspaceCheck.ok) {
         uiError(`Refusing to install: ${workspaceCheck.reason}`);
@@ -689,17 +703,16 @@ async function main() {
         scope === 'global'
             ? readGlobalManifest()
             : readManifest(targetRepository);
-    if (scope === 'global' && localManifest) {
+    const bothInstalls =
+        'Where both exist, Claude Code and Cline run the global skills, and Kiro and Roo Code the local ones. ' +
+        'lb-setup from the global install refuses to prepare a repository that has a local install, ' +
+        'so keep one of them for this repository.';
+    if (scope === 'global' && hasLocalInstall) {
         warn(
-            'This folder also has a local LaunchBridge install. Where both exist, ' +
-                'Claude Code runs the global skills and Kiro and Roo Code run the local ones; ' +
-                'keep one of them for this repository.'
+            `This folder also has a local LaunchBridge install. ${bothInstalls}`
         );
     } else if (scope === 'local' && globalManifest) {
-        warn(
-            'A global LaunchBridge install exists too. Where both exist, ' +
-                'Claude Code runs the global skills and Kiro and Roo Code run the local ones.'
-        );
+        warn(`A global LaunchBridge install exists too. ${bothInstalls}`);
     }
 
     // The existing manifest for this scope pre-populates the skill selection
@@ -716,6 +729,8 @@ async function main() {
     const method = resolvedFlags.method
         ? resolvedFlags.method
         : await promptForMethod();
+    const linkedFolders = linkedFoldersWarning(method, agents);
+    if (linkedFolders) warn(linkedFolders);
     // The manifest stores external skills as group keys (ai-domain-<domain>),
     // but the prompt pre-checks categories by member skill name. Expand group
     // keys to the external skills the last install actually recorded (their
@@ -753,9 +768,47 @@ async function main() {
             : []
     );
 
+    // The skill folders a global install that did not finish (it was
+    // interrupted, or could not write its record) had started on. Those that
+    // exist are LaunchBridge's, as recorded ones are, until a run finishes
+    // them.
+    let unfinishedRun = null;
+    if (scope === 'global') {
+        try {
+            unfinishedRun = await readGlobalPending();
+        } catch (err) {
+            const hint =
+                err.code === 'EACCES' || err.code === 'EPERM'
+                    ? ` ${PERMISSION_HINT}`
+                    : '';
+            uiError(
+                `Cannot read ${path.join(globalStateDir(), GLOBAL_PENDING)}, the list of skill folders an earlier global install did not finish: ${err.message}. Nothing was installed; fix or remove that file and run the installer again.${hint}`
+            );
+            process.exit(1);
+        }
+    }
+    /** @type {Set<string>} */
+    const unfinishedTargets = new Set();
+    for (const key of unfinishedRun ?? []) {
+        const exists = await pathExists(
+            path.join(installRoot, ...key.split('/'))
+        ).catch(() => false);
+        if (exists) unfinishedTargets.add(key);
+    }
+    const recordedTargets = readInstalledTargets(existingManifestForPrompts);
+    // A folder only such a run had started on did not exist before it, or
+    // the user said to replace it, so it is replaced without asking.
+    const isUnrecordedUnfinished = (skillTargetPath) => {
+        const key = targetKey(installRoot, skillTargetPath);
+        return unfinishedTargets.has(key) && !recordedTargets?.has(key);
+    };
+
     // Skill directories LaunchBridge installed, recorded per directory. A
     // manifest from before this record falls back to the skill names above.
-    const priorTargets = readInstalledTargets(existingManifestForPrompts);
+    const priorTargets =
+        recordedTargets || unfinishedTargets.size > 0
+            ? new Set([...(recordedTargets ?? []), ...unfinishedTargets])
+            : null;
     const wasInstalledByLaunchBridge = (skillTargetPath, skillName) =>
         priorTargets
             ? priorTargets.has(targetKey(installRoot, skillTargetPath))
@@ -770,6 +823,8 @@ async function main() {
     // and may be reached through links (a ~/.claude kept in a dotfiles
     // repository), but never into the LaunchBridge source.
     const targets = [];
+    /** @type {Map<string, string>} Each global skills folder's real location */
+    const realDirs = new Map();
     for (const agent of agents) {
         const dir = getTargetPathFromValidator(agent, scope, targetRepository);
         if (scope === 'global') {
@@ -785,9 +840,34 @@ async function main() {
                 path: dir,
                 realPath: check.linked ? check.realPath : undefined,
             });
+            realDirs.set(dir, check.realPath);
         } else {
             targets.push({ agent, path: dir });
         }
+    }
+    const skillsDirs = [...new Set(targets.map((t) => t.path))];
+
+    // Two agents' skills folders that are one folder through a link would
+    // each install into it, and each treat what the other installed as not
+    // LaunchBridge's. Agents that name the same folder (Codex, pi and other
+    // agents in ~/.agents/skills) share it as one.
+    const firstDirAt = new Map();
+    for (const [dir, real] of realDirs) {
+        const other = firstDirAt.get(real);
+        if (other === undefined) {
+            firstDirAt.set(real, dir);
+            continue;
+        }
+        const agentsAt = (d) =>
+            targets
+                .filter((t) => t.path === d)
+                .map((t) => AGENTS[t.agent]?.displayName ?? t.agent)
+                .join(' and ');
+        uiError(
+            `Refusing to install: ${other} (${agentsAt(other)}) and ${dir} (${agentsAt(dir)}) are the same folder (${real}), through a link. ` +
+                `Select ${agentsAt(other)} or ${agentsAt(dir)}, not both (the other reads the same skills through the link), or make the two folders separate.`
+        );
+        process.exit(1);
     }
 
     // In a global install Codex, pi and other agents share ~/.agents/skills,
@@ -824,6 +904,57 @@ async function main() {
     // Step 4: Show summary and get confirmation
     spacer();
     const summary = displaySummary(selections);
+
+    // What this run takes from the clone's working tree that the clone has
+    // not committed: the selected skills, and the files lb-setup's AGENTS.md
+    // reference and Python dependency files are built from.
+    let uncommitted = null;
+    try {
+        uncommitted = await uncommittedSkillChanges(sourcePath, [
+            ...availableSkills
+                .filter((s) => selectedSkills.includes(s.name))
+                .map((s) => ({ name: s.name, path: s.path })),
+            ...ASSET_SOURCES.map((rel) => ({
+                name: rel,
+                path: path.join(sourcePath, ...rel.split('/')),
+            })),
+        ]);
+    } catch (err) {
+        spacer();
+        warn(
+            `Could not check the LaunchBridge clone for changes that are not committed: ${err.message}`
+        );
+    }
+    const uncommittedNames = selectedSkills.filter((name) =>
+        uncommitted?.has(name)
+    );
+    const uncommittedSources = ASSET_SOURCES.filter((rel) =>
+        uncommitted?.has(rel)
+    );
+    if (uncommittedNames.length > 0 || uncommittedSources.length > 0) {
+        const parts = [];
+        if (uncommittedNames.length > 0) {
+            parts.push(
+                `These skills are installed as they are in the LaunchBridge clone, which has changes to them that are not committed: ${uncommittedNames.join(', ')}.`
+            );
+        }
+        if (uncommittedSources.length > 0) {
+            parts.push(
+                uncommittedNames.length > 0
+                    ? `lb-setup's AGENTS.md reference and Python dependency files are built from files with such changes too: ${uncommittedSources.join(', ')}.`
+                    : `lb-setup's AGENTS.md reference and Python dependency files are built from files the LaunchBridge clone has changes to that are not committed: ${uncommittedSources.join(', ')}.`
+            );
+        }
+        parts.push(`To see the changes: git -C "${sourcePath}" status`);
+        spacer();
+        warn(parts.join(' '));
+    }
+    if (unfinishedTargets.size > 0) {
+        spacer();
+        warn(
+            "An earlier global install did not finish. The skill folders it had started on are LaunchBridge's, and this run finishes those of the agents and skills you selected."
+        );
+    }
 
     let confirmed;
     if (resolvedFlags.yes) {
@@ -897,6 +1028,7 @@ async function main() {
     // Determine what changed since the last install to decide what to skip/install.
     // If lifecycle detection fails, fall back to installing everything (old behavior).
     let lifecycleDecision = null;
+    let lifecycleError = null;
     let currentVersion = null;
     let deliveryMethod = null;
     let gitCommitHash = null;
@@ -914,11 +1046,21 @@ async function main() {
     // null: every selected agent's copy of each skill in skillsToInstall.
     /** @type {Set<string> | null} */
     let pendingTargets = null;
-    // Skill folders LaunchBridge installed that are laid out another way than
-    // this run installs them (an older symlink install linked each file); they
-    // are replaced without asking, as after a change of install method.
+    // The install method differs from the one this scope's install recorded.
+    const methodChanged =
+        existingManifestForPrompts?.installMethod != null &&
+        existingManifestForPrompts.installMethod !== method;
+    // Skill folders LaunchBridge installed the way an older symlink install
+    // did (a real folder of per-file links) that hold nothing else; they are
+    // replaced without asking, as after a change of install method. A folder
+    // laid out any other way than this run installs it is asked about, as
+    // one whose content differs is.
     /** @type {Set<string>} */
     const relayoutTargets = new Set();
+    // Skill folders a re-run found holding what this source installs there,
+    // by targetKey: one an unfinished run had started on needs nothing more.
+    /** @type {Set<string>} */
+    const matchingTargets = new Set();
     // How this run installs a skill for an agent (installer.js skillLayout),
     // and the files the installer writes into that agent's copy of an AI skill.
     const layoutFor = (agent, skillName) => {
@@ -930,6 +1072,106 @@ async function main() {
             : undefined;
         return { layout: skillLayout(method, ownFiles), ownFiles };
     };
+    /**
+     * Whether a recorded skill folder is laid out the way an older symlink
+     * install made it, holding nothing LaunchBridge did not put there.
+     * @param {string} skillTargetPath
+     * @param {Map<string, Buffer> | undefined} ownFiles - From layoutFor
+     */
+    const isOlderLayout = async (skillTargetPath, ownFiles) => {
+        try {
+            return (
+                (await installedLayout(skillTargetPath)) === 'per-file' &&
+                (
+                    await entriesNotInstalled(skillTargetPath, sourcePath, {
+                        ownFiles: ownFiles ? [...ownFiles.keys()] : [],
+                    })
+                ).length === 0
+            );
+        } catch {
+            return false;
+        }
+    };
+    const warnRelaidOut = (names) => {
+        if (names.size > 0) {
+            warn(
+                `These skills are laid out the way an older LaunchBridge installed them, so they are installed again: ${[...names].join(', ')}`
+            );
+        }
+    };
+    const warnContentDiffers = (names) => {
+        if (names.size > 0) {
+            warn(
+                `Installed skill content differs from this LaunchBridge source, so these are installed again: ${[...names].join(', ')}`
+            );
+        }
+    };
+
+    // A recorded folder an earlier run left in place when its skill was no
+    // longer selected stays LaunchBridge's (to remove, or to take back when
+    // the skill is selected again) only while it holds what this source
+    // installs there. One that differs may hold the user's own changes, so
+    // from now on it is treated as theirs: never removed, and replaced only
+    // when they say so. A folder a run that did not finish had started on
+    // may be incomplete, so it stays LaunchBridge's.
+    /** @type {Set<string>} */
+    const handedOver = new Set();
+    if (priorTargets) {
+        const previouslySelected = new Set(
+            manifestSkills
+                ? externalSkills.expandManifestKeys(
+                      manifestSkills,
+                      priorExternalNames,
+                      externalSkillList
+                  )
+                : []
+        );
+        const sourceDirOf = (name) =>
+            externalSkills.ownsSkill(name, externalSkillList)
+                ? externalSkillList.find((s) => s.name === name)?.path
+                : availableSkills.find((s) => s.name === name)?.path;
+        for (const base of skillsDirs) {
+            const sharing = targets.filter((t) => t.path === base);
+            for (const name of await recordedOrphans(
+                priorTargets,
+                installRoot,
+                base,
+                previouslySelected
+            )) {
+                const target = path.join(base, name);
+                if (unfinishedTargets.has(targetKey(installRoot, target))) {
+                    continue;
+                }
+                const sourceDir = sourceDirOf(name);
+                let pristine = false;
+                for (const { agent } of sourceDir ? sharing : []) {
+                    const { ownFiles } = layoutFor(agent, name);
+                    if (
+                        await installedSkillMatches(
+                            target,
+                            sourceDir,
+                            sourcePath,
+                            { overrides: ownFiles }
+                        )
+                    ) {
+                        pristine = true;
+                        break;
+                    }
+                }
+                if (pristine) continue;
+                priorTargets.delete(targetKey(installRoot, target));
+                handedOver.add(target);
+                const [shownTarget, shownName] = [target, name].map(
+                    stripControlCharacters
+                );
+                warn(
+                    sourceDir
+                        ? `${shownTarget} was left in place when ${shownName} was no longer selected, and differs from what LaunchBridge installs for it, so it is treated as yours from now on: LaunchBridge doesn't remove it, and replaces it only when you say so.`
+                        : `${shownTarget} was left in place when ${shownName} was no longer selected, and this LaunchBridge source no longer has ${shownName}, so it is treated as yours from now on: LaunchBridge doesn't remove it, and replaces it only when you say so.`
+                );
+            }
+        }
+    }
 
     try {
         deliveryMethod = await detectDeliveryMethod(sourcePath);
@@ -1019,6 +1261,48 @@ async function main() {
             fsSync.existsSync(
                 path.join(targetRepository, '.lb_workspace', 'setup_status.md')
             );
+
+        // A repository lb-setup prepared for the global install has a status
+        // file and no local manifest, as one whose first local install was
+        // interrupted has; lb-setup's record of preparing it tells them apart.
+        const preparedForGlobal =
+            statusFileExists &&
+            !existingManifest &&
+            (await preparedForGlobalInstall(targetRepository));
+        let pythonDepsChanged = false;
+        let agentsLbStaged = false;
+        if (preparedForGlobal) {
+            const workspace = path.join(targetRepository, '.lb_workspace');
+            const holdsDeps = async (skills) => {
+                const deps = buildPythonDepsFiles(sourcePath, skills);
+                return folderHolds(
+                    new Map([
+                        ['constraints.txt', deps.constraints],
+                        ['pyproject.toml', Buffer.from(deps.pyproject, 'utf8')],
+                    ]),
+                    path.join(workspace, 'config', 'python_deps')
+                );
+            };
+            // lb-setup copied python_deps/ from the global install's generated
+            // files, built from the selection sorted (buildGlobalAssets); this
+            // install writes the same dependencies in selection order.
+            try {
+                pythonDepsChanged = !(
+                    (await holdsDeps(selectedSkills)) ||
+                    (await holdsDeps([...new Set(selectedSkills)].sort()))
+                );
+            } catch {
+                pythonDepsChanged = true;
+            }
+            // copyAgentsSteering stages AGENTS_LB.md beside an AGENTS.md (or
+            // a link there), and keeps one that is pending.
+            for (const file of [
+                path.join(targetRepository, 'AGENTS.md'),
+                path.join(workspace, 'steering', 'AGENTS_LB.md'),
+            ]) {
+                if (await pathExists(file)) agentsLbStaged = true;
+            }
+        }
 
         // Check if the generated pyproject.toml would change
         // Compare the hash of what we'd generate NOW against the hash stored in the
@@ -1118,6 +1402,9 @@ async function main() {
             statusFileExists,
             generatedPyprojectChanged,
             mcpGatedSkills,
+            preparedForGlobal,
+            pythonDepsChanged,
+            agentsLbStaged,
         });
 
         // Translate the lifecycle decision from the manifest keyspace (which
@@ -1155,7 +1442,8 @@ async function main() {
         // The manifest's hashes come from the target repository, so a re-run also
         // compares each installed directory with this source before deciding there
         // is nothing to do; one that differs, or is laid out the way an older
-        // version installed it, is installed again.
+        // version installed it, is installed again. An interactive run also
+        // offers to remove a recorded folder of a skill no longer selected.
         if (lifecycleDecision.scenario === 'idempotent_rerun') {
             const missingSkills = new Set();
             const changedSkills = new Set();
@@ -1221,7 +1509,10 @@ async function main() {
                     // the files the installer wrote for that agent, and is a
                     // copy in a symlink install too.
                     const { layout, ownFiles } = layoutFor(agent, skillName);
-                    if ((await installedLayout(skillTargetPath)) !== layout) {
+                    if (
+                        (await installedLayout(skillTargetPath)) !== layout &&
+                        (await isOlderLayout(skillTargetPath, ownFiles))
+                    ) {
                         relaidSkills.add(skillName);
                         relayoutTargets.add(skillTargetPath);
                         needs(skillName, skillTargetPath);
@@ -1237,19 +1528,15 @@ async function main() {
                     ) {
                         changedSkills.add(skillName);
                         needs(skillName, skillTargetPath);
+                    } else {
+                        matchingTargets.add(
+                            targetKey(installRoot, skillTargetPath)
+                        );
                     }
                 }
             }
-            if (relaidSkills.size > 0) {
-                warn(
-                    `These skills are laid out the way an older LaunchBridge installed them, so they are installed again: ${[...relaidSkills].join(', ')}`
-                );
-            }
-            if (changedSkills.size > 0) {
-                warn(
-                    `Installed skill content differs from this LaunchBridge source, so these are installed again: ${[...changedSkills].join(', ')}`
-                );
-            }
+            warnRelaidOut(relaidSkills);
+            warnContentDiffers(changedSkills);
             // A global install's generated files are kept once, in the state
             // directory; they are written again when they or their record
             // differ from what this source builds.
@@ -1263,6 +1550,21 @@ async function main() {
                     warn(
                         `The files lb-setup prepares repositories from (${globalGeneratedDir()}) are missing or out of date; they are written again.`
                     );
+                }
+            }
+
+            // A --yes run removes no orphan, so only an interactive one goes
+            // on to offer them.
+            let orphansToOffer = false;
+            if (!resolvedFlags.yes && priorTargets) {
+                for (const base of skillsDirs) {
+                    const orphans = await recordedOrphans(
+                        priorTargets,
+                        installRoot,
+                        base,
+                        selectedSkills
+                    );
+                    if (orphans.length > 0) orphansToOffer = true;
                 }
             }
 
@@ -1284,6 +1586,17 @@ async function main() {
                         );
                     }
                 }
+            }
+            // A folder handed over above is dropped from the record, and the
+            // folders a run that did not finish had started on are added to
+            // it or kept listed, which only a run that goes on does.
+            if (
+                missingSkills.size === 0 &&
+                !assetsStale &&
+                !orphansToOffer &&
+                handedOver.size === 0 &&
+                !unfinishedRun
+            ) {
                 const emptyReport = {
                     successful: [],
                     failed: [],
@@ -1301,7 +1614,8 @@ async function main() {
 
             // Some agents are missing skills on disk — promote to incremental_update
             // so the install loop runs for the missing skills, in only the
-            // folders that need them (none, when only the generated files do).
+            // folders that need them (none, when only the generated files, the
+            // orphan cleanup or the record do).
             pendingTargets = neededTargets;
             lifecycleDecision = {
                 ...lifecycleDecision,
@@ -1317,13 +1631,17 @@ async function main() {
         ) {
             // The decision compares hashes, not agents: an agent added in this
             // run also needs the skills that did not change, but only in its
-            // own folder, and an unchanged skill laid out the way an older
-            // version installed it is installed again. A same-named folder
+            // own folder, and an unchanged skill laid out another way than
+            // this run installs it is installed again (see relayoutTargets
+            // for when that is asked about). A same-named folder
             // LaunchBridge didn't install goes to the install loop, whose
-            // ownership check skips it or asks.
+            // ownership check skips it or asks, and so does one a run that
+            // did not finish had started on, which may be incomplete.
             const toInstall = new Set(lifecycleDecision.skillsToInstall);
             const extra = new Set();
             const neededTargets = new Set();
+            const relaidSkills = new Set();
+            const changedSkills = new Set();
             for (const agent of agents) {
                 const baseTargetPath = getTargetPathFromValidator(
                     agent,
@@ -1338,19 +1656,36 @@ async function main() {
                     const recorded =
                         fsSync.existsSync(skillTargetPath) &&
                         wasInstalledByLaunchBridge(skillTargetPath, skillName);
-                    const relaid =
+                    const { layout, ownFiles } = layoutFor(agent, skillName);
+                    const laidOutOtherwise =
                         recorded &&
-                        (await installedLayout(skillTargetPath)) !==
-                            layoutFor(agent, skillName).layout;
-                    if (relaid) relayoutTargets.add(skillTargetPath);
+                        (await installedLayout(skillTargetPath)) !== layout;
+                    // After a change of install method every folder is
+                    // laid out otherwise, and replaced without asking.
+                    if (laidOutOtherwise && !methodChanged) {
+                        if (await isOlderLayout(skillTargetPath, ownFiles)) {
+                            relaidSkills.add(skillName);
+                            relayoutTargets.add(skillTargetPath);
+                        } else {
+                            changedSkills.add(skillName);
+                        }
+                    }
                     if (toInstall.has(skillName)) {
                         neededTargets.add(skillTargetPath);
-                    } else if (!recorded || relaid) {
+                    } else if (
+                        !recorded ||
+                        laidOutOtherwise ||
+                        unfinishedTargets.has(
+                            targetKey(installRoot, skillTargetPath)
+                        )
+                    ) {
                         neededTargets.add(skillTargetPath);
                         extra.add(skillName);
                     }
                 }
             }
+            warnRelaidOut(relaidSkills);
+            warnContentDiffers(changedSkills);
             if (extra.size > 0) {
                 pendingTargets = neededTargets;
                 lifecycleDecision = {
@@ -1373,9 +1708,10 @@ async function main() {
             }
             spacer();
         }
-    } catch {
+    } catch (err) {
         // If lifecycle detection fails, fall back to existing behavior (install everything)
         lifecycleDecision = null;
+        lifecycleError = err;
     }
 
     // Determine which skills to install in the per-agent loop
@@ -1387,6 +1723,28 @@ async function main() {
           )
         : selectedSkills;
 
+    // A global install lists beside its record each skill folder it starts
+    // to replace or create, just before it does (in the loop below), so a run
+    // that stops before its record is written leaves those LaunchBridge's,
+    // and no others. The list first holds what an unfinished run left, and
+    // writing it before anything is installed shows the folder can be written.
+    /** @type {Set<string>} */
+    const pendingKeys = new Set(unfinishedTargets);
+    if (scope === 'global') {
+        try {
+            await writeGlobalPending(pendingKeys);
+        } catch (err) {
+            const hint =
+                err.code === 'EACCES' || err.code === 'EPERM'
+                    ? ` ${PERMISSION_HINT}`
+                    : '';
+            uiError(
+                `Cannot write the global install record in ${globalStateDir()}: ${err.message}. Nothing was installed; fix that and run the installer again.${hint}`
+            );
+            process.exit(1);
+        }
+    }
+
     step(3, 'Installing Skills');
     spacer();
 
@@ -1397,9 +1755,6 @@ async function main() {
     // Auto-overwrite without prompting when the install method changed (symlink→copy or vice versa).
     // The user already confirmed the new method at the selection step, so re-prompting for each
     // skill conflict would be confusing and could leave a mix of symlinks and copies on disk.
-    const methodChanged =
-        existingManifestForPrompts?.installMethod != null &&
-        existingManifestForPrompts.installMethod !== method;
     let overwriteAll = resolvedFlags.yes || methodChanged ? true : false;
     // Track which target paths have already been scanned for orphans so that
     // agents sharing the same skillsDir (e.g. cline/codex/cursor all use
@@ -1408,6 +1763,8 @@ async function main() {
     // Track whether any skill directories were removed (orphan cleanup), so the
     // workspace/status refresh runs even on removal-only runs with no installs.
     let orphansRemoved = false;
+    /** @type {string[]} The skill of each folder the orphan cleanup removed */
+    const removedOrphans = [];
 
     // Copy mode follows links inside skills only when they stay in the source tree.
     const copyAllowedRoot = await fs.realpath(sourcePath);
@@ -1513,6 +1870,7 @@ async function main() {
                 }
                 for (const orphan of orphanResult.removed) {
                     orphansRemoved = true;
+                    removedOrphans.push(orphan);
                     muted(`Removed orphaned directory: ${orphan}`);
                 }
                 if (orphanResult.removed.length) spacer();
@@ -1582,13 +1940,16 @@ async function main() {
                     overwriteAll:
                         overwriteAll ||
                         (previouslyInstalled &&
-                            relayoutTargets.has(skillTargetPath)),
+                            (relayoutTargets.has(skillTargetPath) ||
+                                isUnrecordedUnfinished(skillTargetPath))),
                     yes: resolvedFlags.yes,
                     previouslyInstalled,
                 });
                 if (decision === 'skip') {
                     foreignTargets.add(targetKey(installRoot, skillTargetPath));
-                    const reason = `${skillTargetPath} exists and was not installed by LaunchBridge; left unchanged (--yes never replaces it).`;
+                    const reason = handedOver.has(skillTargetPath)
+                        ? `${skillTargetPath} was left in place when ${skillName} was no longer selected and differs from what LaunchBridge installs for it; left unchanged (--yes never replaces it).`
+                        : `${skillTargetPath} exists and was not installed by LaunchBridge; left unchanged (--yes never replaces it).`;
                     warn(reason);
                     results.push({
                         skillName,
@@ -1641,7 +2002,32 @@ async function main() {
                 if (resolution === 'overwriteAll') {
                     overwriteAll = true;
                 }
+            }
 
+            // Listed before it is replaced or created (see pendingKeys); a
+            // folder of someone else's the user said to replace is
+            // LaunchBridge's from now on.
+            const key = targetKey(installRoot, skillTargetPath);
+            if (scope === 'global' && !pendingKeys.has(key)) {
+                try {
+                    await writeGlobalPending([...pendingKeys, key]);
+                    pendingKeys.add(key);
+                } catch (error) {
+                    const reason = `${skillTargetPath} was not ${exists ? 'replaced' : 'installed'}: the global install record in ${globalStateDir()} could not be written: ${error.message}`;
+                    warn(reason);
+                    results.push({
+                        skillName,
+                        agent,
+                        success: false,
+                        error: reason,
+                        targetPath: skillTargetPath,
+                    });
+                    displayProgress(skillName, agent, 'failure');
+                    continue;
+                }
+            }
+
+            if (exists) {
                 // resolution === 'overwrite' or 'overwriteAll'
                 try {
                     await removePath(skillTargetPath);
@@ -1661,9 +2047,11 @@ async function main() {
             // Install the skill: a link to its folder, or a copy (a copy install,
             // or a folder the installer writes files of its own into).
             const { layout } = layoutFor(agent, skillName);
+            let created = false;
             try {
                 if (layout === 'link') {
                     await createSymlink(skillSourcePath, skillTargetPath);
+                    created = true;
                 } else {
                     await copySkill(skillSourcePath, skillTargetPath, {
                         allowedRoot: copyAllowedRoot,
@@ -1671,6 +2059,9 @@ async function main() {
                             warn(
                                 `Skipped link outside the LaunchBridge source: ${src} -> ${resolved}`
                             ),
+                        onCreate: () => {
+                            created = true;
+                        },
                     });
                 }
                 if (externalSkills.ownsSkill(skillName, externalSkillList)) {
@@ -1705,6 +2096,22 @@ async function main() {
                     if (!errorMessage.includes(PERMISSION_HINT)) {
                         errorMessage += ` ${PERMISSION_HINT}`;
                     }
+                }
+
+                // A global install's skill folders serve every repository, so
+                // what it made of one that wasn't there is removed rather
+                // than left for the agents to load. When it made nothing,
+                // whatever is there now is someone else's.
+                if (scope === 'global' && !exists && created) {
+                    try {
+                        await removePath(skillTargetPath);
+                    } catch (removeError) {
+                        const left = `Could not remove the partly installed ${skillTargetPath}: ${removeError.message}`;
+                        warn(left);
+                        errorMessage += ` ${left}`;
+                    }
+                } else if (scope === 'global' && !exists) {
+                    pendingKeys.delete(key);
                 }
 
                 results.push({
@@ -1900,10 +2307,15 @@ async function main() {
     // succeeded, regardless of whether any skills were installed in this run.
     // This ensures removed/orphaned skills are dropped from skillHashes even
     // when the remaining selected skills were all unchanged (no files installed).
+    // A global install's pending.json changes here only once its record is
+    // written.
+    let recordFailed = false;
     if (lifecycleDecision && currentVersion) {
         try {
             // Record the skill directories LaunchBridge now owns: those this
-            // run installed, plus earlier ones still present and not skipped.
+            // run installed, plus earlier ones still present and not skipped,
+            // including those of skills no longer selected that were left in
+            // place, so a later run can still remove them or take them back.
             const installedNow = new Set(
                 results
                     .filter((r) => r.success && !r.error?.includes('Skipped'))
@@ -1926,6 +2338,20 @@ async function main() {
                             (await pathExists(skillPath)))
                     ) {
                         installedTargets.add(key);
+                    }
+                }
+            }
+            if (priorTargets) {
+                for (const base of skillsDirs) {
+                    for (const name of await recordedOrphans(
+                        priorTargets,
+                        installRoot,
+                        base,
+                        allSelectedSkills
+                    )) {
+                        installedTargets.add(
+                            targetKey(installRoot, path.join(base, name))
+                        );
                     }
                 }
             }
@@ -1975,19 +2401,63 @@ async function main() {
                 };
                 await writeGlobalState(
                     GLOBAL_MANIFEST,
-                    JSON.stringify(globalManifestOut, null, 2) + '\n'
+                    JSON.stringify(
+                        assetsFailed
+                            ? keepPreviousAssetFields(
+                                  globalManifestOut,
+                                  globalManifest
+                              )
+                            : globalManifestOut,
+                        null,
+                        2
+                    ) + '\n'
                 );
                 await recordGlobalInstallSource(sourcePath);
+                // A listed folder stays listed until a run installs it, or
+                // finds it holding what it installs there, or it is gone:
+                // its agent or skill may not be selected now, or its install
+                // may have failed part-way.
+                const unfinished = [];
+                for (const key of [...pendingKeys].sort()) {
+                    if (
+                        !installedNow.has(key) &&
+                        !matchingTargets.has(key) &&
+                        (await pathExists(
+                            path.join(installRoot, ...key.split('/'))
+                        ).catch(() => false))
+                    ) {
+                        unfinished.push(key);
+                    }
+                }
+                if (unfinished.length > 0) {
+                    await writeGlobalPending(unfinished);
+                    const shown = unfinished.map((key) =>
+                        stripControlCharacters(
+                            path.join(installRoot, ...key.split('/'))
+                        )
+                    );
+                    warn(
+                        `These skill folders a global install did not finish may be incomplete: ${shown.join(', ')}. They stay LaunchBridge's, listed in ${path.join(globalStateDir(), GLOBAL_PENDING)}: run the installer again with their agents and skills selected to finish them, or remove them.`
+                    );
+                } else {
+                    await removeGlobalPending();
+                }
             } else {
                 await writeManifest(targetRepository, newManifest);
             }
         } catch (err) {
+            if (scope === 'global') recordFailed = true;
             warn(
                 scope === 'global'
-                    ? `Could not write the global install record: ${err.message}`
+                    ? `Could not write the global install record: ${err.message}. Fix that and run the installer again.`
                     : 'Could not write version manifest.'
             );
         }
+    } else if (scope === 'global') {
+        recordFailed = true;
+        warn(
+            `Could not write the global install record: ${lifecycleError?.message ?? 'version.txt names no release version'}. Fix that and run the installer again.`
+        );
     }
 
     // Step 7: Build and display final report
@@ -2012,7 +2482,7 @@ async function main() {
         const lifecycleReport = buildLifecycleReport(
             report,
             lifecycleDecision,
-            { scope }
+            { scope, removed: removedOrphans }
         );
         displayLifecycleReport(lifecycleReport);
     } else {
@@ -2020,7 +2490,7 @@ async function main() {
     }
 
     // Step 8: Exit with appropriate code
-    const exitCode = assetsFailed ? 1 : getExitCode(report);
+    const exitCode = assetsFailed || recordFailed ? 1 : getExitCode(report);
     process.exit(exitCode);
 }
 

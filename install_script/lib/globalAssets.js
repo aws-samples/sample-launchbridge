@@ -30,14 +30,32 @@ import crypto from 'crypto';
 import fs from 'fs/promises';
 import fsSync from 'fs';
 import path from 'path';
-import { safePathJoin } from './pathSanitizer.js';
+import { isPathWithin, safePathJoin } from './pathSanitizer.js';
 import { buildPythonDepsFiles } from './venvSetup.js';
 import { mergeSetupStatus, buildMarkdownTable } from './setupStatus.js';
 import { workspaceLayout } from './folderSetup.js';
-import { globalGeneratedDir } from './stateDir.js';
+import { globalGeneratedDir, repoStateDir } from './stateDir.js';
 
 /** Format of workspace_layout.json, read by bootstrap_workspace.py. */
 export const WORKSPACE_LAYOUT_FORMAT = 1;
+
+/**
+ * The record lb-setup keeps in a repository's state directory of what it
+ * prepared the repository with from a global install
+ * (bootstrap_workspace.py SETUP_RECORD).
+ */
+export const GLOBAL_SETUP_RECORD = 'global_setup.json';
+
+/**
+ * The files in the LaunchBridge source that the generated files are built
+ * from, besides the selection (POSIX paths relative to the source). A local
+ * install writes its AGENTS.md reference and python_deps/ from them too.
+ */
+export const ASSET_SOURCES = [
+    'agent_steering/AGENTS.md',
+    'project_dependencies/constraints.txt',
+    'project_dependencies/pyproject.toml',
+];
 
 /**
  * Builds the generated files for a global install's selection.
@@ -106,6 +124,45 @@ export function assetDigests(assets) {
 }
 
 /**
+ * The global record's fields that describe the generated files. lb-setup
+ * checks the generated folder, and each repository's copy of the AGENTS.md
+ * reference, against them, so they must describe the files on disk.
+ */
+export const RECORDED_ASSET_FIELDS = [
+    'generatedAssets',
+    'generatedPyprojectHash',
+    'agentsHash',
+    'pyprojectHash',
+];
+
+/**
+ * A global record with its generated-file fields taken from the previous
+ * record, for a run that could not write the generated files it built: the
+ * files on disk are still the ones the previous record describes. Without a
+ * previous record the fields are left out, so lb-setup asks for the installer
+ * to be run again.
+ *
+ * @param {Record<string, unknown>} record - The record this run built
+ * @param {Record<string, unknown> | null} previous - The record it started from
+ * @returns {Record<string, unknown>}
+ */
+export function keepPreviousAssetFields(record, previous) {
+    const kept = { ...record };
+    for (const field of RECORDED_ASSET_FIELDS) {
+        if (
+            previous &&
+            previous[field] !== undefined &&
+            previous[field] !== null
+        ) {
+            kept[field] = previous[field];
+        } else {
+            delete kept[field];
+        }
+    }
+    return kept;
+}
+
+/**
  * Regular files under `dir` by POSIX relative path, or null when something
  * other than folders and regular files is there.
  *
@@ -130,21 +187,23 @@ async function listRegularFiles(dir, base = dir) {
 }
 
 /**
- * Whether the generated folder holds exactly these files: no other file, no
- * link, and each file's bytes as built. The folder itself must be a real
- * folder.
+ * Whether `dir` is a real folder holding exactly these files: no other file,
+ * no link, and each file's bytes as given.
  *
- * @param {Map<string, Buffer>} assets
- * @param {string} [dir] - The generated folder (default globalGeneratedDir())
+ * @param {Map<string, Buffer>} files - File bytes by POSIX path relative to
+ *   `dir`
+ * @param {string} dir
  * @returns {Promise<boolean>}
  */
-export async function globalAssetsMatch(assets, dir = globalGeneratedDir()) {
+export async function folderHolds(files, dir) {
     try {
         if (!(await fs.lstat(dir)).isDirectory()) return false;
-        const files = await listRegularFiles(dir);
-        if (files === null) return false;
-        if (files.join('\0') !== [...assets.keys()].join('\0')) return false;
-        for (const [rel, bytes] of assets) {
+        const found = await listRegularFiles(dir);
+        if (found === null) return false;
+        if (found.join('\0') !== [...files.keys()].sort().join('\0')) {
+            return false;
+        }
+        for (const [rel, bytes] of files) {
             const onDisk = await fs.readFile(
                 safePathJoin(dir, ...rel.split('/'))
             );
@@ -157,24 +216,49 @@ export async function globalAssetsMatch(assets, dir = globalGeneratedDir()) {
 }
 
 /**
- * Writes the generated files, replacing whatever the generated folder held.
- * They are written into a new folder beside it, which is then renamed into
- * place, so lb-setup never reads a half-written set. Folders are readable by
- * the user only (0700) and files too (0600), as the rest of the state
- * directory is. A link at the folder's path is removed, never written through.
+ * Whether the generated folder holds exactly these files: no other file, no
+ * link, and each file's bytes as built. The folder itself must be a real
+ * folder.
  *
  * @param {Map<string, Buffer>} assets
  * @param {string} [dir] - The generated folder (default globalGeneratedDir())
+ * @returns {Promise<boolean>}
+ */
+export async function globalAssetsMatch(assets, dir = globalGeneratedDir()) {
+    return folderHolds(assets, dir);
+}
+
+/**
+ * Writes the generated files, replacing whatever the generated folder held.
+ * They are written into a new folder beside it, and the old folder is moved
+ * aside while the new one is renamed into place, so lb-setup never reads a
+ * half-written set, and a rename that fails leaves the old set where it was.
+ * Folders are readable by the user only (0700) and files too (0600), as the
+ * rest of the state directory is. A link at the folder's path is moved aside
+ * and removed, never written through.
+ *
+ * @param {Map<string, Buffer>} assets
+ * @param {string} [dir] - The generated folder (default globalGeneratedDir())
+ * @param {{ rename?: (from: string, to: string) => Promise<void> }} [options]
+ *   What moves the folders (default fs.rename; tests pass one that fails)
  * @returns {Promise<void>}
  */
-export async function writeGlobalAssets(assets, dir = globalGeneratedDir()) {
+export async function writeGlobalAssets(
+    assets,
+    dir = globalGeneratedDir(),
+    { rename = fs.rename } = {}
+) {
     const parent = path.dirname(dir);
     await fs.mkdir(parent, { recursive: true, mode: 0o700 });
     await fs.chmod(parent, 0o700);
-    const temp = path.join(
-        parent,
-        `.${path.basename(dir)}.${crypto.randomBytes(8).toString('hex')}.tmp`
-    );
+    const beside = (suffix) =>
+        path.join(
+            parent,
+            `.${path.basename(dir)}.${crypto.randomBytes(8).toString('hex')}.${suffix}`
+        );
+    const temp = beside('tmp');
+    const old = beside('old');
+    let movedAside = false;
     await fs.mkdir(temp, { mode: 0o700 });
     try {
         for (const [rel, bytes] of assets) {
@@ -189,11 +273,56 @@ export async function writeGlobalAssets(assets, dir = globalGeneratedDir()) {
             await fs.writeFile(file, bytes, { flag: 'wx', mode: 0o600 });
             await fs.chmod(file, 0o600);
         }
-        // fs.rm removes a link itself, never what it points to.
-        await fs.rm(dir, { recursive: true, force: true });
-        await fs.rename(temp, dir);
+        try {
+            await rename(dir, old);
+            movedAside = true;
+        } catch (err) {
+            if (err.code !== 'ENOENT') throw err;
+        }
+        try {
+            await rename(temp, dir);
+        } catch (err) {
+            // When the old set can't be moved back either, it is kept
+            // beside the folder rather than removed.
+            if (movedAside) await rename(old, dir).catch(() => {});
+            throw err;
+        }
     } catch (err) {
         await fs.rm(temp, { recursive: true, force: true });
         throw err;
+    }
+    if (movedAside) {
+        // fs.rm removes a link itself, never what it points to. The new set
+        // is in place, so an old one that can't be removed is left there.
+        await fs.rm(old, { recursive: true, force: true }).catch(() => {});
+    }
+}
+
+/**
+ * Whether lb-setup prepared the repository for a global install: it keeps a
+ * record of that in the repository's state directory
+ * (verify_integrity.global_setup_record). A record that resolves inside the
+ * repository doesn't count, since it could have arrived with the repository.
+ *
+ * @param {string} targetRepo
+ * @returns {Promise<boolean>}
+ */
+export async function preparedForGlobalInstall(targetRepo) {
+    try {
+        const record = path.join(repoStateDir(targetRepo), GLOBAL_SETUP_RECORD);
+        if (
+            isPathWithin(
+                await fs.realpath(record),
+                await fs.realpath(targetRepo)
+            )
+        ) {
+            return false;
+        }
+        const data = JSON.parse(await fs.readFile(record, 'utf8'));
+        return (
+            typeof data === 'object' && data !== null && !Array.isArray(data)
+        );
+    } catch {
+        return false;
     }
 }

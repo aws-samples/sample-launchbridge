@@ -16,6 +16,7 @@ import {
     targetKey,
     readInstalledTargets,
     namesUnder,
+    recordedOrphans,
 } from '../../lib/installedTargets.js';
 import { runPostPullSync } from '../../lib/updater.js';
 import { updateAiSkills } from '../../lib/aiSkills.js';
@@ -70,6 +71,82 @@ describe('installedTargets helpers', () => {
                 path.join(repo, '.claude', 'skills')
             ),
         ]).toEqual(['a', 'b']);
+    });
+
+    describe('recordedOrphans', () => {
+        let repo;
+        let base;
+        beforeEach(() => {
+            repo = fs.realpathSync(
+                fs.mkdtempSync(path.join(os.tmpdir(), 'lb-orphans-'))
+            );
+            base = path.join(repo, '.claude', 'skills');
+        });
+        afterEach(() => {
+            fs.rmSync(repo, { recursive: true, force: true });
+        });
+
+        it.skipIf(process.platform === 'win32')(
+            'lists the recorded folders of skills not selected that are still there',
+            async () => {
+                for (const name of ['kept', 'selected', 'mine']) {
+                    fs.mkdirSync(path.join(base, name), { recursive: true });
+                }
+                fs.symlinkSync(
+                    path.join(repo, 'elsewhere'),
+                    path.join(base, 'linked')
+                );
+                fs.writeFileSync(path.join(base, 'file'), 'not a skill\n');
+                const installed = new Set([
+                    '.claude/skills/kept',
+                    '.claude/skills/selected',
+                    '.claude/skills/linked',
+                    '.claude/skills/file',
+                    '.claude/skills/removed',
+                    '.claude/skills/..',
+                    '.kiro/skills/other',
+                ]);
+
+                expect(
+                    await recordedOrphans(installed, repo, base, ['selected'])
+                ).toEqual(['kept', 'linked']);
+            }
+        );
+
+        it('lists none when the skills folder is gone', async () => {
+            expect(
+                await recordedOrphans(
+                    new Set(['.claude/skills/kept']),
+                    repo,
+                    base,
+                    []
+                )
+            ).toEqual([]);
+        });
+
+        it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+            'keeps every recorded name when the skills folder cannot be read',
+            async () => {
+                fs.mkdirSync(path.join(base, 'kept'), { recursive: true });
+                fs.chmodSync(base, 0o000);
+                try {
+                    expect(
+                        await recordedOrphans(
+                            new Set([
+                                '.claude/skills/kept',
+                                '.claude/skills/gone',
+                                '.claude/skills/..',
+                            ]),
+                            repo,
+                            base,
+                            []
+                        )
+                    ).toEqual(['gone', 'kept']);
+                } finally {
+                    fs.chmodSync(base, 0o755);
+                }
+            }
+        );
     });
 });
 

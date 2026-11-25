@@ -71,21 +71,30 @@ uvx --from pip-licenses==5.5.5 pip-licenses --python "$LC_VENV/bin/python" --par
 
 Packages for another platform (the Windows-only ones in `constraints.txt`) are skipped there; check them on that platform when they change.
 
-CI runs on Linux only, so check a global install by hand on Windows before a release that changes the installer or lb-setup's scripts. Use PowerShell, a user without Administrator rights, and a scratch project (`mkdir $env:TEMP\lb-check; cd $env:TEMP\lb-check; git init`):
+CI runs on Linux only, so check a global install by hand on Windows before a release that changes the installer or lb-setup's scripts. Use PowerShell, a user without Administrator rights, a clone of the release with `git submodule update --init` and `npm ci` run in it (not `npm run setup`: npm runs scripts with `cmd.exe` on Windows, which has no `unset`, and its `npm link` would replace your own `launchbridge` command), and a scratch project (`mkdir $env:TEMP\lb-check; cd $env:TEMP\lb-check; git init`). The steps install globally, so run them with a throwaway profile, which leaves your own global install alone: in the PowerShell window you run them in, point `USERPROFILE` at a new folder, which the installer and lb-setup's scripts then take as your home folder, `XDG_CONFIG_HOME` (LaunchBridge keeps its records under it when it is set) at the `.config` folder in it, and `launchbridge` at the release clone's installer (put the clone's path in place of `<release clone>`):
+
+```powershell
+mkdir $env:TEMP\lb-profile
+$env:USERPROFILE = "$env:TEMP\lb-profile"
+$env:XDG_CONFIG_HOME = "$env:USERPROFILE\.config"
+function launchbridge { node "<release clone>\install_script\index.js" @args }
+```
 
 1. **Copy install.** Run `launchbridge --scope global --agent claude,kiro --skills all --method copy --yes` from any folder. It exits 0, the skills are under `$env:USERPROFILE\.claude\skills` and `$env:USERPROFILE\.kiro\skills`, the record is in `$env:USERPROFILE\.config\launchbridge\global\manifest.json`, and the folder it ran in is unchanged.
 2. **Symlink install, Developer Mode off.** `launchbridge --scope global --agent claude --skills lb-setup --method symlink --yes` exits 0: `$env:USERPROFILE\.claude\skills\lb-setup` is a junction to the clone's `skills\lb-setup` (`(Get-Item $env:USERPROFILE\.claude\skills\lb-setup).LinkType` prints `Junction`), the clone has no `skills\lb-setup\assets`, and `$env:USERPROFILE\.config\launchbridge\global\generated\` holds regular files.
 3. **Back to copy.** `launchbridge --scope global --agent claude --skills lb-setup --method copy --yes` exits 0, `lb-setup` is a real folder again, and the clone's `skills\lb-setup` is still all there.
-4. **Preparing the project.** With `$S = "$env:USERPROFILE\.claude\skills\lb-setup\scripts"`, run `python -I "$S\bootstrap_workspace.py" mode "$env:TEMP\lb-check"` (prints `"mode": "global"`), then `python -I "$S\bootstrap_workspace.py" init "$env:TEMP\lb-check"` (exits 0, creates `.lb_workspace\` and `CLAUDE.md`), then `python -I "$S\venv_identity.py" deps "$env:TEMP\lb-check"` and `python -I "$S\verify_integrity.py" --global "$env:TEMP\lb-check"` (both exit 0). `python -I "$S\bootstrap_workspace.py" check "$env:USERPROFILE"` exits 1.
-5. **Update.** `launchbridge update` from any folder reports the global install as up to date.
+4. **Preparing the project.** With `$S = "$env:USERPROFILE\.claude\skills\lb-setup\scripts"`, run `python -I "$S\bootstrap_workspace.py" mode "$env:TEMP\lb-check"` (prints `"mode": "global"`), then `python -I "$S\bootstrap_workspace.py" init "$env:TEMP\lb-check"` (exits 0, creates `.lb_workspace\` and `CLAUDE.md`), then `python -I "$S\venv_identity.py" deps "$env:TEMP\lb-check"` and `python -I "$S\verify_integrity.py" --global "$env:TEMP\lb-check"` (both exit 0). Run `init` a second time: it exits 0 and prints `"resets": {}`. `python -I "$S\bootstrap_workspace.py" check "$env:USERPROFILE"` exits 1, and `mode` exits 1 for `"$env:USERPROFILE"` and for `"$env:USERPROFILE\.claude"`.
+5. **Update.** `launchbridge update` from any folder reports the global install as up to date and exits 0.
+6. **Uncommitted change.** Add a line to the clone's `skills\lb-setup\SKILL.md`. `launchbridge update` exits 0, says it kept lb-setup at the version the global install recorded and names `skills/lb-setup/SKILL.md`, and the line is not in `$env:USERPROFILE\.claude\skills\lb-setup\SKILL.md`. Undo the change with `git checkout -- skills/lb-setup/SKILL.md` in the clone.
 
-Remove the scratch project and run `launchbridge --scope global` again to restore your own selection afterwards.
+Afterwards, remove both folders with `cd $env:TEMP; cmd /c rmdir /s /q lb-profile; cmd /c rmdir /s /q lb-check` (`rmdir /s` removes a junction without following it into the clone), and close the window, which drops the `launchbridge` function too. Your own global install and `launchbridge` command are as they were.
 
 Then set the release version, the same in every file:
 
 - `version.txt` (first token on the first line; the installer reads it)
 - `package.json`
 - `package-lock.json` (run `npm install --package-lock-only` after changing `package.json`)
+- the example release tag (`v<version>`) in `QUICKSTART_INSTALL.md`'s clone steps and in `README.md`'s Verifying a release
 
 Commit the version change. The release tag points at this commit.
 

@@ -13,6 +13,7 @@ import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 import {
+    entriesNotInstalled,
     installedLayout,
     installedSkillMatches,
 } from '../../lib/installedContent.js';
@@ -354,6 +355,106 @@ describe('installedLayout', () => {
         expect(await installedLayout(perFile)).toBe('per-file');
         expect(await installedLayout(file)).toBe('other');
         expect(await installedLayout(path.join(root, 'none'))).toBeNull();
+    });
+});
+
+describe.skipIf(process.platform === 'win32')('entriesNotInstalled', () => {
+    let root;
+    let source;
+    let skill;
+    beforeEach(() => {
+        root = fs.realpathSync(
+            fs.mkdtempSync(path.join(os.tmpdir(), 'lb-perfile-'))
+        );
+        source = path.join(root, 'launchbridge');
+        skill = path.join(source, 'skills', 'demo');
+        fs.mkdirSync(path.join(skill, 'scripts'), { recursive: true });
+        fs.writeFileSync(path.join(skill, 'SKILL.md'), '# demo\n');
+        fs.writeFileSync(path.join(skill, 'scripts', 'a.py'), 'print(1)\n');
+    });
+    afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+
+    /** What LaunchBridge 1.2.0 installed: real folders, one link per file. */
+    function perFileInstall() {
+        const dest = path.join(root, 'installed', 'demo');
+        fs.mkdirSync(path.join(dest, 'scripts'), { recursive: true });
+        fs.symlinkSync(
+            path.join(skill, 'SKILL.md'),
+            path.join(dest, 'SKILL.md')
+        );
+        fs.symlinkSync(
+            path.join(skill, 'scripts', 'a.py'),
+            path.join(dest, 'scripts', 'a.py')
+        );
+        return dest;
+    }
+
+    it('lists nothing in a folder that holds only what LaunchBridge put there', async () => {
+        const dest = perFileInstall();
+        fs.mkdirSync(path.join(dest, 'scripts', '__pycache__'));
+        fs.writeFileSync(
+            path.join(dest, 'scripts', '__pycache__', 'a.cpython-312.pyc'),
+            'x'
+        );
+        fs.writeFileSync(path.join(dest, 'scripts', 'b.PYC'), 'x');
+        fs.writeFileSync(path.join(dest, '.DS_Store'), 'x');
+        // A link to a file the skill no longer has.
+        fs.symlinkSync(path.join(skill, 'gone.md'), path.join(dest, 'gone.md'));
+
+        expect(await entriesNotInstalled(dest, source)).toEqual([]);
+    });
+
+    it('lists the user’s own files and links that lead outside the source, without following them', async () => {
+        const dest = perFileInstall();
+        const mine = path.join(dest, 'assets', 'best_practices', 'client.md');
+        fs.mkdirSync(path.dirname(mine), { recursive: true });
+        fs.writeFileSync(mine, 'my standards\n');
+        const elsewhere = path.join(root, 'elsewhere');
+        fs.mkdirSync(elsewhere);
+        fs.writeFileSync(path.join(elsewhere, 'x.md'), 'x\n');
+        fs.symlinkSync(elsewhere, path.join(dest, 'linked'));
+        fs.symlinkSync(
+            path.join(root, 'missing.md'),
+            path.join(dest, 'dangling.md')
+        );
+
+        expect(await entriesNotInstalled(dest, source)).toEqual([
+            'assets/best_practices/client.md',
+            'dangling.md',
+            'linked',
+        ]);
+    });
+
+    it('accepts the files the installer writes for the agent, at their paths only, whatever their bytes', async () => {
+        const dest = perFileInstall();
+        fs.unlinkSync(path.join(dest, 'SKILL.md'));
+        fs.writeFileSync(
+            path.join(dest, 'SKILL.md'),
+            '# adapted, then edited\n'
+        );
+
+        expect(await entriesNotInstalled(dest, source)).toEqual(['SKILL.md']);
+        expect(
+            await entriesNotInstalled(dest, source, { ownFiles: ['SKILL.md'] })
+        ).toEqual([]);
+
+        fs.writeFileSync(path.join(dest, 'scripts', 'SKILL.md'), 'x\n');
+        expect(
+            await entriesNotInstalled(dest, source, { ownFiles: ['SKILL.md'] })
+        ).toEqual(['scripts/SKILL.md']);
+    });
+
+    it('refuses a link or a file in place of the folder', async () => {
+        const link = path.join(root, 'link');
+        fs.symlinkSync(skill, link, 'dir');
+        await expect(entriesNotInstalled(link, source)).rejects.toThrow(
+            /is not a folder/
+        );
+        const file = path.join(root, 'file');
+        fs.writeFileSync(file, 'x');
+        await expect(entriesNotInstalled(file, source)).rejects.toThrow(
+            /is not a folder/
+        );
     });
 });
 

@@ -38,8 +38,11 @@ export function skillLayout(method, ownFiles) {
  * files the source gains later. On Windows the link is a junction, which
  * needs neither Developer Mode nor an Administrator shell.
  *
- * Codex skips a skill whose SKILL.md is a link but loads a linked skill
- * folder (openai/codex#15844); Claude Code and Kiro load linked folders too.
+ * Codex, Claude Code, Roo Code and pi load a linked skill folder (Codex skips
+ * a skill whose SKILL.md is a link, openai/codex#15844). Older Kiro IDE and
+ * Cline releases skip linked skill folders (kirodotdev/Kiro#6401,
+ * cline/cline#11113), so the installer warns when a symlink install is for
+ * either of them.
  *
  * @param {string} source - The skill's source folder
  * @param {string} target - Where the link is made (must not exist)
@@ -132,8 +135,11 @@ export async function createSymlink(
  *
  * @param {string} source - Source path (the skill directory to copy from)
  * @param {string} target - Target path (where the skill will be copied to)
- * @param {{ allowedRoot?: string, onSkip?: (src: string, resolved: string) => void }} [options]
- *     `allowedRoot` must be a real (symlink-resolved) path.
+ * @param {{ allowedRoot?: string, onSkip?: (src: string, resolved: string) => void, onCreate?: () => void }} [options]
+ *     `allowedRoot` must be a real (symlink-resolved) path. `onCreate` is
+ *     called once `target` itself has been made, so a caller can tell a copy
+ *     that failed part-way from one that made nothing (and left what is
+ *     there, if anything, to someone else).
  * @returns {Promise<void>}
  * @throws {Error} If target already exists or copy operation fails
  *
@@ -194,6 +200,7 @@ export async function copySkill(source, target, options = {}) {
     await copyDirectoryRecursive(source, target, {
         allowedRoot: options.allowedRoot,
         onSkip: options.onSkip,
+        onCreate: options.onCreate,
         visited: new Set(),
     });
 }
@@ -204,7 +211,9 @@ export async function copySkill(source, target, options = {}) {
  *
  * @param {string} source - Source directory path
  * @param {string} target - Target directory path
- * @param {{ allowedRoot?: string, onSkip?: Function, visited: Set<string> }} ctx
+ * @param {{ allowedRoot?: string, onSkip?: Function, onCreate?: Function, visited: Set<string> }} ctx
+ *     `onCreate` is called after the first directory is made, the copy's
+ *     own folder, and then dropped
  * @returns {Promise<void>}
  */
 async function copyDirectoryRecursive(source, target, ctx) {
@@ -232,6 +241,9 @@ async function copyDirectoryRecursive(source, target, ctx) {
             `Failed to create directory "${target}": ${error.message}`
         );
     }
+    const { onCreate } = ctx;
+    ctx.onCreate = undefined;
+    onCreate?.();
 
     // Read directory contents
     const entries = await fs.readdir(source, { withFileTypes: true });

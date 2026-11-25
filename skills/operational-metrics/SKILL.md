@@ -593,7 +593,7 @@ All comparison CSVs go in the current run's timestamped folder alongside the sta
 
 ## References
 
-- `references/bedrock-pricing.md` — Bedrock pricing tables for common Claude and Nova models, plus a Python pricing dict. Use this as the primary source for Bedrock cost calculations. If a model is missing, ask the user to look it up at the official pricing page and provide the rates, then add them to this file for future use.
+- `references/bedrock-pricing.md` — Bedrock pricing tables for common Claude and Nova models, plus a Python pricing dict. Use this as the primary source for Bedrock cost calculations. If a model is missing, ask the user to look it up at the official pricing page and provide the rates, then append them to `.lb_workspace/operational_metrics/bedrock-pricing-overrides.md` for future use (see Phase 4). Never edit this file or any of the skill's other files.
 - `generate-predictions` skill — Handles the full execution lifecycle: finding/creating inference scripts, setting up venvs, resolving credentials, confirming parameters with the user, and running predictions. When invoked by this skill, it automatically sets `ENABLE_METRICS_LOGGING=true`.
 - `references/dashboard-generation.md` — Dashboard generation workflow: data discovery, panel selection, script generation, and output. Used by Phase 7.
 - `references/dashboard_template.py` — Starter Python script for dashboard generation. Adapted based on discovered data.

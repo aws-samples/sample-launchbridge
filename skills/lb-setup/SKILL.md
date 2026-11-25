@@ -38,7 +38,8 @@ check happens.
   6. `.venv_lb` can't be built safely (Step 0b): `python_deps/` doesn't match the
      installer's record (the user re-runs the installer), or the venv's record
      can't be written.
-  7. In a global install, the repository can't be prepared safely (Step G):
+  7. The folder is not a project, or not there (Step G item 3), or, in a global
+     install, the repository can't be prepared safely (Step G item 5):
      `bootstrap_workspace.py` refused it, or there is no global install record.
   8. This skill's own scripts are missing (Step G item 2): an older symlink install
      linked each file, and `launchbridge update` added no link for the new ones. The
@@ -211,7 +212,7 @@ LaunchBridge is installed one of two ways, and this step finds out which one thi
    test -f "{skill_dir}/scripts/bootstrap_workspace.py"
    ```
 
-   (On Windows: `Test-Path "{skill_dir}\scripts\bootstrap_workspace.py"`.) If the file is missing, this is hard stop 8: this lb-setup was installed by LaunchBridge 1.2 or earlier, whose symlink installs linked each file of a skill, and `launchbridge update` adds no link for a file added since. These instructions are newer than the scripts beside them, so no later step can be trusted to work. Tell the user exactly that, and to run `launchbridge` again in `{codebase_abs_path}` with the same agents, choosing **Local** when `{skill_dir}` is inside `{codebase_abs_path}` (`launchbridge --scope local`) and **Global** otherwise. That run links each skill folder as a whole, without asking. Then they run lb-setup again. Never look for the script anywhere else, copy one in, or write it yourself: a copy found elsewhere may not belong to this install.
+   (On Windows: `Test-Path "{skill_dir}\scripts\bootstrap_workspace.py"`.) If the file is missing, this is hard stop 8: this lb-setup was installed by LaunchBridge 1.2 or earlier, whose symlink installs linked each file of a skill, and `launchbridge update` adds no link for a file added since. These instructions are newer than the scripts beside them, so no later step can be trusted to work. Tell the user exactly that, and to run `launchbridge` again in `{codebase_abs_path}` with the same agents, choosing **Local** when `{skill_dir}` is inside `{codebase_abs_path}` (`launchbridge --scope local`) and **Global** otherwise. That run links each skill folder as a whole; it asks first about a folder that also holds files LaunchBridge did not install. Then they run lb-setup again. Never look for the script anywhere else, copy one in, or write it yourself: a copy found elsewhere may not belong to this install.
 
 3. Find the mode:
 
@@ -219,7 +220,13 @@ LaunchBridge is installed one of two ways, and this step finds out which one thi
    python3 -I "{skill_dir}/scripts/bootstrap_workspace.py" mode "{codebase_abs_path}"
    ```
 
-   It prints JSON with `mode` (`local` or `global`) and `warnings`. Add each warning to the setup notes: one says when the repository has both a local and a global install. Where both exist, Claude Code runs the global skills and Kiro and Roo Code run the local ones; the user decides which to keep. Never remove either install yourself.
+   On Windows, use `python` instead of `python3`.
+
+   It prints JSON with `mode` (`local` or `global`) and `warnings`. Add each warning to the setup notes: in local mode, one says when a global install exists too. Where a repository has both, Claude Code and Cline run the global skills and Kiro and Roo Code run the local ones, and the global lb-setup refuses to prepare it (item 5), so the user keeps one of them for this repository. Never remove either install yourself.
+
+   **Exit 1** — hard stop 7. The JSON has `problems` in place of `mode`, saying why the folder is not a project: it is the file system's root, the home folder or a folder above it, or it is (or is inside) an agent's user-level configuration folder such as `~/.claude` or `~/.codex`, a user-level skills folder or the LaunchBridge state folder. Rarely, `problems` says a file could not be read instead. Show the user `problems` and stop. For a folder that is not a project, the user opens the project's own folder and runs lb-setup there; never carry on in this folder or pick another one yourself.
+
+   **Exit 2** — nothing on stdout, and stderr says `{codebase_abs_path}` is not an existing folder. Determine `{codebase_abs_path}` again (item 1) and run `mode` again; if it exits 2 again, this is hard stop 7: show the user the message and stop.
 
 4. **`local`**: continue with Step 0. Every step below runs as it always has.
 
@@ -229,11 +236,13 @@ LaunchBridge is installed one of two ways, and this step finds out which one thi
    python3 -I "{skill_dir}/scripts/bootstrap_workspace.py" init "{codebase_abs_path}"
    ```
 
-   It first checks the repository and writes nothing when a check fails: the folder must be an existing project folder owned by the user (not the file system's root, the home folder or a folder above it, nor inside the LaunchBridge source, its state folder or a user-level skills folder), the state folder must be outside it, nothing it creates (`.lb_workspace/` and its folders and files, `.project_artifacts/`, `.venv_lb`) may be a symbolic link, and git must track nothing LaunchBridge runs from. It then verifies the generated files against the global install record, which is outside every repository, and creates what is missing: `.lb_workspace/` and `.project_artifacts/` with their folders, `.lb_workspace/setup_status.md` (merged with an existing one, keeping its progress), `.lb_workspace/config/python_deps/` with its record outside the repository, `.lb_workspace/config/lb_agents_reference.md`, `AGENTS.md` (or, beside an existing one, `.lb_workspace/steering/AGENTS_LB.md` for Step 1 to merge) and `@AGENTS.md` in `CLAUDE.md`. It never writes through a symbolic link `AGENTS.md` or `CLAUDE.md`, and it never creates or reuses `.venv_lb`: Step 0b builds and seals that as in a local install.
+   On Windows, use `python` instead of `python3`.
+
+   It first checks the repository and writes nothing when a check fails: the folder must be an existing project folder owned by the user (not the file system's root, the home folder or a folder above it, nor an agent's user-level configuration folder or a folder inside one, nor inside the LaunchBridge source, its state folder or a user-level skills folder) without a local LaunchBridge install (`.lb_workspace/config/version_manifest.json`), the state folder must be outside it, nothing it creates (`.lb_workspace/` and its folders and files, `.project_artifacts/`, `.venv_lb`) may be a symbolic link, and git must track nothing LaunchBridge runs from. It then verifies the generated files against the global install record, which is outside every repository, and creates what is missing: `.lb_workspace/` and `.project_artifacts/` with their folders, `.lb_workspace/setup_status.md` (merged with an existing one, keeping its progress, except that `venv-setup` goes back to `not started` whenever `python_deps/` or its record is rewritten), `.lb_workspace/config/python_deps/` with its record outside the repository, `.lb_workspace/config/lb_agents_reference.md`, `AGENTS.md` (or, beside an existing one, `.lb_workspace/steering/AGENTS_LB.md` for Step 1 to merge, on the first setup and after the reference or the skills changed) and `@AGENTS.md` in `CLAUDE.md`. A pending `AGENTS_LB.md` that is not this version's is replaced, and one is removed when `AGENTS.md` is created; `notes` says so. It never writes through a symbolic link `AGENTS.md` or `CLAUDE.md`, and it never creates or reuses `.venv_lb`: Step 0b builds and seals that as in a local install.
 
    Act on the exit code:
-   - **Exit 0** — continue with Step 0. Add `warnings` and `notes` to the setup notes. `resets` lists the `setup_status.md` rows reset because the global install changed since lb-setup last ran here (a skill was updated, the dependencies changed, the MCP template or the AGENTS.md reference changed, or skills were added or removed); mention them in the Setup Summary under **Set up**.
-   - **Exit 1** — hard stop 7. Show the user `problems` and stop. Never create the folders or files yourself to get around a refusal. When the generated files don't match the global install record, the fix is `launchbridge update`, or `launchbridge` again with Global; for a link or a tracked file, the user removes it.
+   - **Exit 0** — continue with Step 0. Add `warnings` and `notes` to the setup notes. `resets` lists the `setup_status.md` rows reset because the global install changed since lb-setup last ran here (a skill was updated, the dependencies changed, the MCP template or the AGENTS.md reference changed, or skills were added or removed), and `venv-setup` when `python_deps/` or its record was rewritten; mention them in the Setup Summary under **Set up**.
+   - **Exit 1** — hard stop 7. Show the user `problems` and stop. Never create the folders or files yourself to get around a refusal. When the generated files don't match the global install record, the fix is `launchbridge update`, or `launchbridge` again with Global; for a link or a tracked file, the user removes it. When the repository has a local install, its setup belongs to that install: the user keeps one of the two for this repository, setting it up with an agent that runs the repository's own skills (Kiro or Roo Code, when the local install is for one of them; `problems` says so) or removing one of the installs (`problems` names the local install's folders, and the User Guide says how to remove each install). Never remove either yourself. Exit 1 also means a file or folder could not be read or written, for example a folder the user can't write to: `problems` names it, with the error. The user fixes that and runs lb-setup again, which finishes what this run began; never change permissions or ownership yourself.
    - **Exit 2** — hard stop 7. There is no global install record on this machine (for example the skills were copied into the home folder by hand). Tell the user to install with `launchbridge` and choose Global.
 
 6. Keep the mode for the rest of the run. Where a step below differs by mode, it says so.
@@ -247,7 +256,7 @@ LaunchBridge is installed one of two ways, and this step finds out which one thi
 2. **Local install only** (a global install keeps its record outside the repository, and `launchbridge update` keeps it current): check delivery mode by reading `.lb_workspace/config/version_manifest.json`:
    - If the file exists and has a `sourcePath` field:
      - Check if `sourcePath` is accessible (directory exists on this machine)
-     - If **not accessible**: inform the user: "The LaunchBridge clone this project was installed from is not available on this machine. Setup can continue; to upgrade LaunchBridge or add/remove skills, clone LaunchBridge again and re-run `launchbridge` in this project."
+     - If **not accessible**: inform the user: "The LaunchBridge clone this project was installed from is not available on this machine. Setup can continue; to upgrade LaunchBridge or add/remove skills, clone LaunchBridge again and re-run `launchbridge` in this project, choosing Local (`launchbridge --scope local`)."
      - If **accessible**: proceed normally (the user can re-run the installer themselves)
    - If the file does not exist: skip this check (first-time install or interrupt recovery)
 
@@ -433,7 +442,7 @@ codebase_abs_path=<path>
      python3 -I "{skill_dir}/scripts/venv_identity.py" deps "{codebase_abs_path}"
      ```
 
-     If it exits non-zero, show the user its output, leave `venv-setup` as `in progress`, and stop (hard stop 6), keeping any existing `.venv_lb`: in a local install the user re-runs the `launchbridge` installer for this repository from their LaunchBridge clone, which rewrites and records them; in a global install the user runs `launchbridge` again and chooses Global, then re-runs lb-setup, whose Step G rewrites and records them. Do not edit the files or install without the check. This is expected once after upgrading from a version that didn't record them.
+     If it exits non-zero, show the user its output, leave `venv-setup` as `in progress`, and stop (hard stop 6), keeping any existing `.venv_lb`: in a local install the user re-runs the `launchbridge` installer in this repository and chooses Local (`launchbridge --scope local`), which rewrites and records them; in a global install the user runs `launchbridge` again and chooses Global, then re-runs lb-setup, whose Step G rewrites and records them. Do not edit the files or install without the check. This is expected once after upgrading from a version that didn't record them.
 
    - Only then, if `.venv_lb/` already exists, delete it entirely before recreating:
      - **macOS/Linux**: `rm -rf .venv_lb`
@@ -487,7 +496,7 @@ codebase_abs_path=<path>
 
    Use `python -I -m ensurepip` to bootstrap `pip` into the venv (since `uv venv` does not include `pip` by default), then run it as `python -I -m pip` (isolated, so `PYTHON*` environment variables can't add anything to the path). It installs from a fresh temporary copy of the two checked files, outside the repository, and not editable: pip leaves build output where it builds, which must never be in `python_deps/` (the next check would refuse it, and anything else there could be used by the build).
 
-   LaunchBridge freezes its dependencies: the installer copies the repository's `project_dependencies/constraints.txt` into `python_deps/`, and the install below always uses it (`-c constraints.txt`), so the venv gets exactly the versions that were frozen and scanned. **If `python_deps/constraints.txt` is missing, stop**: tell the user to re-run the `launchbridge` installer from an up-to-date LaunchBridge checkout, and do not install without it.
+   LaunchBridge freezes its dependencies: the installer copies the repository's `project_dependencies/constraints.txt` into `python_deps/`, and the install below always uses it (`-c constraints.txt`), so the venv gets exactly the versions that were frozen and scanned. **If `python_deps/constraints.txt` is missing, stop**: tell the user to re-run the `launchbridge` installer from an up-to-date LaunchBridge checkout (for a local install, in this repository, choosing Local), and do not install without it.
 
    **macOS/Linux:**
 
@@ -604,12 +613,43 @@ python3 -I "{skill_dir}/scripts/verify_integrity.py" --global "{codebase_abs_pat
 It checks the skills in the user's home folders, the generated files in
 `~/.config/launchbridge/global/generated/`, and the repository's copy of
 `lb_agents_reference.md`, and the exit codes mean the same as below. Act on them as in
-item 4, with two differences: never run `--write-baseline` (it refuses with
-`--global`), and the fix for an intended change or an upgrade is `launchbridge update`,
-or `launchbridge` again with Global, after which the user re-runs lb-setup. A
-`NOT CHECKED` line naming "a folder LaunchBridge did not install" means a same-named
-skill of the user's own is in the home folder; the agent loads it in place of
-LaunchBridge's, so add it to the setup notes.
+item 4, with two differences. Never run `--write-baseline` (it refuses with
+`--global`). And the fix depends on what changed: after `FAILED`, the check prints one
+indented line for each kind of difference it found, saying how to fix it. Give the user
+those lines in the Setup Summary, with item 4's question, in place of item 4's fix:
+
+- **Missing skills**: `launchbridge update`, or `launchbridge` again with Global,
+  restores them; `launchbridge update` leaves out a skill the clone has uncommitted
+  changes to. **No skills folder**: `launchbridge` again with Global installs the
+  skills again; `launchbridge update` doesn't make a skills folder that is gone.
+- **Modified skill folders** (copies, and anything else that is not a link into the
+  LaunchBridge clone): `launchbridge` again with Global installs them again;
+  `launchbridge update` leaves a modified copy as it is.
+- **Modified skill links** (a link into the LaunchBridge clone, whose content changed):
+  the change is in the clone, where every project's link sees it, so installing again
+  doesn't undo it. The user checks it with `git -C "<clone>" status` and discards what
+  they didn't make; to accept an intended change, they run `launchbridge` again with
+  Global. When the link is into a submodule of the clone (an AI skill, in
+  `project_dependencies/ai-skills`), the line names the submodule, and the `git`
+  commands run there; `git -C "<clone>" submodule update -- <path>` puts a submodule
+  checked out at another commit back. `launchbridge update` keeps the recorded digest
+  of a skill the clone has uncommitted changes to (its links still show them), and
+  records a committed change (for example a `git pull` in the clone).
+- **Bytecode with no source in linked skill folders**: the `.pyc` files are in the
+  clone; the user checks where they came from and deletes them there. Accepting the
+  change with Global doesn't clear this.
+- **Generated files**: `launchbridge update`, or `launchbridge` again with Global,
+  writes them again.
+- **`lb_agents_reference.md`**: Step G writes it from the generated files on every run,
+  so a difference reported here means those files and the global install record
+  disagree: `launchbridge update`, or `launchbridge` again with Global, writes them
+  again.
+
+Never run `launchbridge`, `launchbridge update` or a `git` command that changes the
+clone yourself to clear the report: which change to keep is the user's decision. After
+the fix, the user re-runs lb-setup. A `NOT CHECKED` line naming "a folder LaunchBridge
+did not install" means a same-named skill of the user's own is in the home folder; the
+agent loads it in place of LaunchBridge's, so add it to the setup notes.
 
 1. Confirm the checker and a baseline exist:
    - `{skill_dir}/scripts/verify_integrity.py` (ships with this skill)

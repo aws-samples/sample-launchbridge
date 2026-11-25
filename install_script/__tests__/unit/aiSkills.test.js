@@ -874,6 +874,9 @@ describe('aiSkills', () => {
                 updated: [],
                 newHashes: {},
                 newFolderHashes: {},
+                problems: [],
+                heldBack: [],
+                modifiedTargets: [],
             });
         });
 
@@ -889,6 +892,118 @@ describe('aiSkills', () => {
                 updated: [],
                 newHashes: {},
                 newFolderHashes: {},
+                problems: [],
+                heldBack: [],
+                modifiedTargets: [],
+            });
+        });
+
+        describe('a recorded folder of an AI skill no longer selected', () => {
+            const recorded = [
+                '.claude/skills/ai-plan',
+                '.claude/skills/ai-create',
+            ];
+            const oldSkillMd = () =>
+                fs.readFileSync(
+                    path.join(
+                        targetRepo,
+                        '.claude',
+                        'skills',
+                        'ai-create',
+                        'SKILL.md'
+                    ),
+                    'utf8'
+                );
+
+            it('is left as it is by a local install’s update, which records nothing for it', async () => {
+                scaffoldSubmodule(tempDir, UPSTREAM_LAYOUT);
+                const list = discoverAll(tempDir);
+                seedInstalled('.claude', ['ai-plan', 'ai-create']);
+
+                const result = await updateAiSkills(
+                    tempDir,
+                    targetRepo,
+                    {
+                        installMethod: 'copy',
+                        agents: ['claude'],
+                        skillHashes: { 'ai-domain-research': 'STALE' },
+                        externalSkillHashes: { 'claude/ai-plan': 'STALE' },
+                        installedTargets: recorded,
+                    },
+                    noopUi
+                );
+
+                expect(result.updated).toEqual(['ai-plan']);
+                expect(oldSkillMd()).toBe('OLD');
+                expect(Object.keys(result.newFolderHashes)).toEqual([
+                    'claude/ai-plan',
+                ]);
+                expect(result.newHashes).toEqual(
+                    await computeAiGroupHashes(['ai-plan'], list)
+                );
+            });
+
+            it('is left as it is by a local install’s update when no AI skill is selected any more', async () => {
+                scaffoldSubmodule(tempDir, UPSTREAM_LAYOUT);
+                seedInstalled('.claude', ['ai-plan', 'ai-create']);
+                const planMd = path.join(
+                    targetRepo,
+                    '.claude',
+                    'skills',
+                    'ai-plan',
+                    'SKILL.md'
+                );
+
+                // What the installer records once every AI skill is
+                // deselected: no AI digests at all.
+                const result = await updateAiSkills(
+                    tempDir,
+                    targetRepo,
+                    {
+                        installMethod: 'copy',
+                        agents: ['claude'],
+                        skillHashes: { 'lb-setup': 'x' },
+                        installedTargets: recorded,
+                    },
+                    noopUi
+                );
+
+                expect(result.updated).toEqual([]);
+                expect(result.newHashes).toEqual({});
+                expect(result.newFolderHashes).toEqual({});
+                expect(fs.readFileSync(planMd, 'utf8')).toBe('OLD');
+                expect(oldSkillMd()).toBe('OLD');
+            });
+
+            it('is left as it is by a global install’s update', async () => {
+                scaffoldSubmodule(tempDir, UPSTREAM_LAYOUT);
+                const base = seedInstalled('.claude', ['ai-plan', 'ai-create']);
+                // What LaunchBridge installed there, before the skill changed.
+                const installed = await computeContentHash(
+                    path.join(base, 'ai-plan')
+                );
+
+                const result = await updateAiSkills(
+                    tempDir,
+                    targetRepo,
+                    {
+                        installMethod: 'copy',
+                        agents: ['claude'],
+                        skills: ['lb-setup', 'ai-plan'],
+                        skillHashes: {},
+                        externalSkillHashes: { 'claude/ai-plan': installed },
+                        installedTargets: recorded,
+                    },
+                    noopUi,
+                    { scope: 'global' }
+                );
+
+                expect(result.problems).toEqual([]);
+                expect(result.updated).toEqual(['ai-plan']);
+                expect(oldSkillMd()).toBe('OLD');
+                expect(Object.keys(result.newFolderHashes)).toEqual([
+                    'claude/ai-plan',
+                ]);
             });
         });
     });

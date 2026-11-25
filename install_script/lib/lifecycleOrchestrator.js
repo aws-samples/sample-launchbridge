@@ -12,7 +12,7 @@
 import { diffManifests } from './versionManifest.js';
 
 /**
- * @typedef {'fresh_install' | 'idempotent_rerun' | 'incremental_update' | 'release_upgrade' | 'interrupt_recovery'} LifecycleScenario
+ * @typedef {'fresh_install' | 'idempotent_rerun' | 'incremental_update' | 'release_upgrade' | 'interrupt_recovery' | 'switch_from_global'} LifecycleScenario
  */
 
 /**
@@ -37,7 +37,9 @@ import { diffManifests } from './versionManifest.js';
  *
  * Decision logic:
  * 1. No manifest + no status file → fresh_install
- * 2. No manifest + status file exists → interrupt_recovery
+ * 2. No manifest + status file exists → interrupt_recovery, or
+ *    switch_from_global when lb-setup prepared the repository for a global
+ *    install (a local install replaces what it set the repository up with)
  * 3. Manifest exists + version differs → release_upgrade
  * 4. Manifest exists + version same + method changed → incremental_update (reinstall all)
  * 5. Manifest exists + version same + all hashes match + same skills + same method → idempotent_rerun
@@ -58,6 +60,12 @@ import { diffManifests } from './versionManifest.js';
  * @param {boolean} [context.statusFileExists] - Whether setup_status.md exists in target
  * @param {boolean} [context.generatedPyprojectChanged] - Whether the generated pyproject.toml content differs from the previously installed version
  * @param {string[]} [context.mcpGatedSkills] - Skills that have associated MCP servers (read from lb_mcp.json template)
+ * @param {boolean} [context.preparedForGlobal] - Whether lb-setup prepared the
+ *   target repository for a global install (its global_setup.json record)
+ * @param {boolean} [context.pythonDepsChanged] - Whether the python_deps/
+ *   files this install writes differ from those the repository has
+ * @param {boolean} [context.agentsLbStaged] - Whether this install leaves
+ *   .lb_workspace/steering/AGENTS_LB.md for lb-setup to merge
  * @returns {LifecycleDecision}
  */
 export function determineLifecycle(context) {
@@ -76,6 +84,9 @@ export function determineLifecycle(context) {
         statusFileExists,
         generatedPyprojectChanged,
         mcpGatedSkills = [],
+        preparedForGlobal = false,
+        pythonDepsChanged = false,
+        agentsLbStaged = false,
     } = context;
 
     const warnings = [];
@@ -89,6 +100,21 @@ export function determineLifecycle(context) {
 
     // Case 1: No manifest exists
     if (!existingManifest) {
+        if (statusFileExists && preparedForGlobal) {
+            return {
+                scenario: 'switch_from_global',
+                skillsToInstall: [...selectedSkills],
+                skillsToReset: [],
+                skillsToRemove: [],
+                skillsUnchanged: [],
+                resetVenvSetup: pythonDepsChanged,
+                resetMcpSetup: false,
+                resetAgentsMerge: agentsLbStaged,
+                regeneratePyproject: true,
+                updateAgentsMd: true,
+                warnings,
+            };
+        }
         if (statusFileExists) {
             // Interrupt recovery: status file exists but no manifest
             return {

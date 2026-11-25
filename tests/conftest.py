@@ -21,6 +21,11 @@ import pytest  # noqa: E402
 @pytest.fixture(autouse=True)
 def _isolated_launchbridge_state(monkeypatch, tmp_path_factory):
     """Keep LaunchBridge's per-user state for every test (and for the installer and
-    scripts the tests start) in a temporary folder, never ~/.config/launchbridge.
-    Tests that need a particular XDG_CONFIG_HOME set their own over this one."""
+    scripts the tests start) in a temporary folder, never ~/.config/launchbridge,
+    and the home folder in another: a global install writes into the agents'
+    folders there. Tests that need a particular XDG_CONFIG_HOME or home folder set
+    their own over these."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("lb-state")))
+    home = str(tmp_path_factory.mktemp("home"))
+    monkeypatch.setenv("HOME", home)
+    monkeypatch.setenv("USERPROFILE", home)

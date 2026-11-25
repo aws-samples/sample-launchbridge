@@ -329,7 +329,7 @@ List only the chosen chain's commands under `## Steps`, and mark each `[x]` once
 
 ## Handoffs
 
-- **suggested → `indexing-and-qa`:** when the user wants context drafted from the codebase and `indexing-and-qa` is installed but not indexed (Step 2 rule). If it is not installed, mention it once as optional (`launchbridge install`, then `lb-setup`); never block on it.
+- **suggested → `indexing-and-qa`:** when the user wants context drafted from the codebase and `indexing-and-qa` is installed but not indexed (Step 2 rule). If it is not installed, mention it once as optional (run `launchbridge` again and select it, then `lb-setup`); never block on it.
 
 ## Maintenance Note
 

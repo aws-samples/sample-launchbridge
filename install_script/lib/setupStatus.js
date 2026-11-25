@@ -65,13 +65,15 @@ function getAllKnownSkills() {
 
 /**
  * Parses an existing setup_status.md and returns a map of skill name → status.
+ * Lines may end in LF, CRLF or CR (an editor or PowerShell on Windows saves
+ * CRLF), as bootstrap_workspace.py's parse_status reads them.
  *
  * @param {string} content - Raw markdown content of the existing file
  * @returns {Map<string, string>} Map of skill/step name to its current status
  */
 export function parseSetupStatusContent(content) {
     const statusMap = new Map();
-    for (const line of content.split('\n')) {
+    for (const line of content.split(/\r\n|\r|\n/)) {
         // Match table data rows: | skill-name | status |
         const match = line.match(/^\|\s+(\S+)\s+\|\s+(.+?)\s+\|$/);
         if (match) {

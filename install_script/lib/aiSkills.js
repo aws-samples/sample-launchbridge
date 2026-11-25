@@ -47,6 +47,7 @@ import { discoverSkills, validateSkillStructure } from './skillDiscovery.js';
 import { computeContentHash } from './contentHash.js';
 import { copySkill, createSymlink, skillLayout } from './installer.js';
 import { AGENTS, getSkillsDir } from './agentConfig.js';
+import { stripControlCharacters } from './terminalText.js';
 
 /** Path to the ai-skills submodule, relative to the LaunchBridge source root. */
 export const AI_SUBMODULE_REL = path.join('project_dependencies', 'ai-skills');
@@ -1118,65 +1119,159 @@ async function removePathRecursive(p) {
     }
 }
 
+/** Up to five names, then how many more. */
+function listNames(names) {
+    const shown = names.slice(0, 5).map(stripControlCharacters).join(', ');
+    return names.length > 5 ? `${shown} and ${names.length - 5} more` : shown;
+}
+
+/**
+ * @typedef {Object} AiUpdateResult
+ * @property {string[]} updated - Skills installed again, for any agent
+ * @property {Record<string, string>} newHashes - Group hashes to record; a
+ *   group with a skill held back, or one whose reinstall failed, is left out
+ *   so the record keeps the hash it had
+ * @property {Record<string, string>} newFolderHashes - `<agent>/<skill>`
+ *   digests to record; a skill held back, or whose folder could not be
+ *   updated, is left out
+ * @property {string[]} problems - What could not be updated (already warned)
+ * @property {Array<{ name: string, paths: string[] | null, live: number,
+ *   kept: number, missing: number }>} heldBack - Skills kept at their recorded
+ *   version because the source has changes to them that are not committed
+ *   (paths null: that could not be told), with how many of their recorded
+ *   folders are links that show the changes (`live`), were left as they were
+ *   (`kept`) or were not made again (`missing`) (global scope only; not
+ *   warned)
+ * @property {string[]} modifiedTargets - Skill folders left as they are
+ *   because they differ from what LaunchBridge installed (global scope only;
+ *   already warned)
+ */
+
 /**
  * Post-pull update for AI skills, kept self-contained so the native updater
- * has no knowledge of external skills. AI skills are tracked at the domain
- * level, so the manifest does not record which individual skills were
- * installed — instead we scan each agent's target directory for installed AI
- * skills (by membership in the discovered list) and reinstall the ones whose
- * domain content changed, the way they were installed (copy or symlink), each
- * with the agent's own files.
+ * has no knowledge of external skills.
+ *
+ * A local install's skills are found by scanning each agent's target
+ * directory (by membership in the discovered list), and the ones whose domain
+ * content changed are reinstalled the way they were installed (copy or
+ * symlink), each with the agent's own files.
+ *
+ * A global install's skills are the ones its record lists, and each folder is
+ * brought up to date as runGlobalSync does a native skill's: a skill whose
+ * digest for that agent changed is copied again (a link to its folder is
+ * always made again when it points anywhere else), a recorded folder that is
+ * gone is installed again, and a folder that differs in any other way is left
+ * as it is, with a warning; so is a changed skill's copy that no longer holds
+ * what LaunchBridge installed. A skills folder that is gone as a whole is not
+ * made again (runGlobalSync reports it). A changed skill the source has
+ * changes to that are not committed (`uncommitted`) is neither copied nor
+ * linked again and keeps its digests. Agents whose skills folders are one
+ * folder share one copy: that of the first of them in agentConfig order.
+ *
+ * Digests are refreshed only where the folder is up to date: a failed
+ * reinstall keeps the recorded ones, so the next update tries again. Only the
+ * skills the record selects are updated (the global record's `skills`, the
+ * ones a local record has digests for): a recorded folder of a skill no
+ * longer selected, which an install left in place, is left as it is.
  *
  * @param {string} sourcePath - LaunchBridge source root
  * @param {string} targetRepo - Target repository root; for a global install,
  *   the home directory the manifest's installedTargets are relative to
  * @param {object} manifest - Existing version manifest (provides group hashes, agents, method)
  * @param {{ muted: Function, success: Function, warn: Function }} ui
- * @param {{ scope?: import('./agentConfig.js').Scope }} [options] - `global`
- *   updates the skills in the agents' user-level folders
- * @returns {Promise<{ updated: string[], newHashes: Record<string, string>,
- *   newFolderHashes: Record<string, string> }>} updated skill names, refreshed
- *   group hashes, and refreshed per-agent digests (all merged into the manifest)
+ * @param {{ scope?: import('./agentConfig.js').Scope,
+ *   uncommitted?: (skills: Array<{ name: string, path: string }>) =>
+ *     Promise<Map<string, string[] | null> | null> }} [options] - `global`
+ *   updates the skills in the agents' user-level folders; `uncommitted` tells
+ *   which of the given skills have changes the source has not committed, by
+ *   changed path (sourceChanges.js; null paths: that could not be told, and
+ *   was reported). When it throws, every one of them is held, as a problem.
+ * @returns {Promise<AiUpdateResult>}
  */
 export async function updateAiSkills(
     sourcePath,
     targetRepo,
     manifest,
     ui,
-    { scope = 'local' } = {}
+    { scope = 'local', uncommitted } = {}
 ) {
-    const { muted, success, warn } = ui;
+    const { warn } = ui;
     const aiSkills = discoverAiSkills(sourcePath, {
         nativeNames: new Set(discoverSkills(sourcePath).map((s) => s.name)),
         onWarn: warn,
     });
     if (aiSkills.length === 0) {
-        return { updated: [], newHashes: {}, newFolderHashes: {} };
+        return emptyAiUpdate();
     }
+    if (scope === 'global') {
+        return updateGlobalAiSkills(
+            sourcePath,
+            targetRepo,
+            manifest,
+            ui,
+            aiSkills,
+            uncommitted
+        );
+    }
+    return updateLocalAiSkills(sourcePath, targetRepo, manifest, ui, aiSkills);
+}
 
+/** @returns {AiUpdateResult} */
+function emptyAiUpdate() {
+    return {
+        updated: [],
+        newHashes: {},
+        newFolderHashes: {},
+        problems: [],
+        heldBack: [],
+        modifiedTargets: [],
+    };
+}
+
+/**
+ * updateAiSkills for a local install.
+ * @returns {Promise<AiUpdateResult>}
+ */
+async function updateLocalAiSkills(
+    sourcePath,
+    targetRepo,
+    manifest,
+    { muted, success, warn },
+    aiSkills
+) {
+    const result = emptyAiUpdate();
     const installMethod = manifest.installMethod;
     const agents = Array.isArray(manifest.agents) ? manifest.agents : [];
     const oldHashes = manifest.skillHashes || {};
 
-    const { getTargetPath, checkSkillsDirectory, checkGlobalSkillsDirectory } =
+    const { getTargetPath, checkSkillsDirectory } =
         await import('./pathValidator.js');
     const { readInstalledTargets, namesUnder } =
         await import('./installedTargets.js');
     const installedTargets = readInstalledTargets(manifest);
-    const checkDirectory = (dir) =>
-        scope === 'global'
-            ? checkGlobalSkillsDirectory(dir, { sourcePath, home: targetRepo })
-            : checkSkillsDirectory(dir, targetRepo);
-    const skillsDirOf = (agent) =>
-        scope === 'global'
-            ? safePathJoin(targetRepo, getSkillsDir(agent, 'global'))
-            : getTargetPath(agent, 'local', targetRepo);
+    const skillsDirOf = (agent) => getTargetPath(agent, 'local', targetRepo);
+    // The selected AI skills are the ones the record has digests for: a
+    // record of skill folders with no such digests selects none (the
+    // installer leaves them out when no AI skill is selected).
+    const recordedDigests = manifest.externalSkillHashes;
+    const selected =
+        recordedDigests && typeof recordedDigests === 'object'
+            ? new Set(
+                  Object.keys(recordedDigests).map((key) =>
+                      key.slice(key.indexOf('/') + 1)
+                  )
+              )
+            : installedTargets
+              ? new Set()
+              : null;
 
     // Scan each agent's target dir for installed AI skills. When the manifest
     // records which directories LaunchBridge installed, only those count; a
-    // same-named directory it skipped is left alone.
+    // same-named directory it skipped is left alone, and so is a recorded one
+    // of a skill no longer selected.
     const installedByAgent = new Map();
     const allInstalled = new Set();
+    const skippedAgents = new Set();
     for (const agent of agents) {
         let base;
         try {
@@ -1184,9 +1279,12 @@ export async function updateAiSkills(
         } catch {
             continue;
         }
-        const dirCheck = await checkDirectory(base);
+        const dirCheck = await checkSkillsDirectory(base, targetRepo);
         if (!dirCheck.ok) {
-            warn(`  Skipped AI skills for ${agent}: ${dirCheck.reason}`);
+            const message = `Skipped AI skills for ${agent}: ${dirCheck.reason}`;
+            result.problems.push(message);
+            warn(`  ${message}`);
+            skippedAgents.add(agent);
             continue;
         }
         let entries;
@@ -1199,17 +1297,19 @@ export async function updateAiSkills(
             .filter((e) => e.isDirectory() || e.isSymbolicLink())
             .map((e) => e.name)
             .filter((n) => isAiSkill(n, aiSkills));
-        const owned = installedTargets
-            ? names.filter((n) =>
-                  namesUnder(installedTargets, targetRepo, base).has(n)
-              )
-            : names;
+        const owned = (
+            installedTargets
+                ? names.filter((n) =>
+                      namesUnder(installedTargets, targetRepo, base).has(n)
+                  )
+                : names
+        ).filter((n) => !selected || selected.has(n));
         installedByAgent.set(agent, owned);
         owned.forEach((n) => allInstalled.add(n));
     }
 
     if (allInstalled.size === 0) {
-        return { updated: [], newHashes: {}, newFolderHashes: {} };
+        return result;
     }
 
     // Recompute hashes from the union of installed AI skills. Links that leave
@@ -1225,7 +1325,7 @@ export async function updateAiSkills(
         [...allInstalled],
         aiSkills,
         agents,
-        { allowedRoot, scope }
+        { allowedRoot }
     );
     const changedGroups = Object.keys(newHashes).filter(
         (group) => newHashes[group] !== oldHashes[group]
@@ -1252,16 +1352,24 @@ export async function updateAiSkills(
                       : copy(src, target)
             : null;
 
-    const updated = [];
+    // Kept at their recorded values: the digests of a folder that could not
+    // be updated, and the hashes of its group, so the next update tries again.
+    const failedKeys = new Set();
+    const keptGroups = new Set();
+    if (skippedAgents.size > 0) {
+        changedGroups.forEach((group) => keptGroups.add(group));
+    }
 
     if (install && changedGroups.length > 0) {
         const changedSet = new Set(changedGroups);
 
-        const reinstalled = new Set();
+        // Agents sharing a skills folder get one copy (copyFor).
+        const reinstalled = new Map();
         for (const [agent, names] of installedByAgent) {
             const base = skillsDirOf(agent);
             for (const name of names) {
-                if (!changedSet.has(aiTrackingKey(name, aiSkills))) {
+                const group = aiTrackingKey(name, aiSkills);
+                if (!changedSet.has(group)) {
                     continue;
                 }
                 const skill = findAiSkill(name, aiSkills);
@@ -1269,37 +1377,385 @@ export async function updateAiSkills(
                     continue;
                 }
                 const target = safePathJoin(base, name);
-                // Agents sharing a skills folder get one copy (copyFor).
-                if (reinstalled.has(target)) {
-                    continue;
-                }
-                reinstalled.add(target);
-                try {
-                    await removePathRecursive(target);
-                    await install(
-                        skill.path,
-                        target,
-                        agentFilesFor(skill, agent, agents, scope)
-                    );
-                    await writeAgentFiles(skill, agent, target, agents, scope);
-                    muted(`  Updated AI skill: ${name} (${agent})`);
-                    if (!updated.includes(name)) {
-                        updated.push(name);
+                if (!reinstalled.has(target)) {
+                    try {
+                        await removePathRecursive(target);
+                        await install(
+                            skill.path,
+                            target,
+                            agentFilesFor(skill, agent, agents)
+                        );
+                        await writeAgentFiles(skill, agent, target, agents);
+                        muted(`  Updated AI skill: ${name} (${agent})`);
+                        if (!result.updated.includes(name)) {
+                            result.updated.push(name);
+                        }
+                        reinstalled.set(target, true);
+                    } catch (err) {
+                        const message = `Could not update AI skill ${name} for ${agent}: ${err.message}`;
+                        result.problems.push(message);
+                        warn(`  ${message}`);
+                        reinstalled.set(target, false);
                     }
-                } catch (err) {
-                    warn(
-                        `  Could not update AI skill ${name} for ${agent}: ${err.message}`
-                    );
+                }
+                if (!reinstalled.get(target)) {
+                    failedKeys.add(`${agent}/${name}`);
+                    keptGroups.add(group);
                 }
             }
         }
 
-        if (updated.length > 0) {
+        if (result.updated.length > 0) {
             success(
-                `${updated.length} AI skill(s) reinstalled from updated source.`
+                `${result.updated.length} AI skill(s) reinstalled from updated source.`
             );
         }
     }
 
-    return { updated, newHashes, newFolderHashes };
+    for (const [group, hash] of Object.entries(newHashes)) {
+        if (!keptGroups.has(group)) result.newHashes[group] = hash;
+    }
+    for (const [key, hash] of Object.entries(newFolderHashes)) {
+        const agent = key.slice(0, key.indexOf('/'));
+        if (!failedKeys.has(key) && !skippedAgents.has(agent)) {
+            result.newFolderHashes[key] = hash;
+        }
+    }
+    return result;
+}
+
+/**
+ * updateAiSkills for a global install.
+ * @returns {Promise<AiUpdateResult>}
+ */
+async function updateGlobalAiSkills(
+    sourcePath,
+    home,
+    manifest,
+    { muted, success, warn },
+    aiSkills,
+    uncommitted
+) {
+    const result = emptyAiUpdate();
+    const problem = (message) => {
+        result.problems.push(message);
+        warn(`  ${message}`);
+    };
+    const method = manifest.installMethod;
+    if (method !== 'copy' && method !== 'symlink') {
+        return result;
+    }
+    const agents = Array.isArray(manifest.agents) ? manifest.agents : [];
+    const oldHashes = manifest.skillHashes || {};
+    const oldDigests = manifest.externalSkillHashes || {};
+
+    const { checkGlobalSkillsDirectory } = await import('./pathValidator.js');
+    const { readInstalledTargets, namesUnder, targetKey } =
+        await import('./installedTargets.js');
+    const { installedLayout, installedSkillMatches, entriesNotInstalled } =
+        await import('./installedContent.js');
+    const installed = readInstalledTargets(manifest);
+    // A recorded folder of a skill no longer selected is left as it is.
+    const selected = Array.isArray(manifest.skills)
+        ? new Set(manifest.skills)
+        : null;
+
+    /** The recorded AI skills in these skills folders, by name. */
+    const recordedIn = async (dirs) => {
+        const names = new Set();
+        for (const dir of dirs) {
+            if (installed) {
+                namesUnder(installed, home, dir).forEach((n) => names.add(n));
+                continue;
+            }
+            const entries = await fsp
+                .readdir(dir, { withFileTypes: true })
+                .catch(() => []);
+            for (const entry of entries) {
+                if (entry.isDirectory() || entry.isSymbolicLink()) {
+                    names.add(entry.name);
+                }
+            }
+        }
+        return [...names]
+            .filter(
+                (n) => isAiSkill(n, aiSkills) && (!selected || selected.has(n))
+            )
+            .sort();
+    };
+
+    // One entry per real skills folder, in agentConfig order: the first agent
+    // using it is the one whose copy it holds.
+    const folders = new Map();
+    const skipped = [];
+    for (const agent of Object.keys(AGENTS)) {
+        if (!agents.includes(agent)) continue;
+        const dir = safePathJoin(
+            home,
+            ...getSkillsDir(agent, 'global').split('/')
+        );
+        let check;
+        try {
+            check = await checkGlobalSkillsDirectory(dir, { sourcePath, home });
+        } catch (err) {
+            check = { ok: false, reason: err.message };
+        }
+        if (!check.ok) {
+            const names = await recordedIn([dir]);
+            if (names.length > 0) {
+                problem(`Skipped AI skills for ${agent}: ${check.reason}`);
+            }
+            skipped.push(...names);
+            continue;
+        }
+        if (!(await fsp.lstat(dir).catch(() => null))) continue;
+        const real = await fsp.realpath(dir).catch(() => check.realPath);
+        if (!folders.has(real)) {
+            folders.set(real, { dirs: [], agents: [] });
+        }
+        const folder = folders.get(real);
+        if (!folder.dirs.includes(dir)) folder.dirs.push(dir);
+        folder.agents.push(agent);
+    }
+
+    const plans = [];
+    for (const folder of folders.values()) {
+        for (const name of await recordedIn(folder.dirs)) {
+            const target =
+                folder.dirs
+                    .map((dir) => safePathJoin(dir, name))
+                    .find(
+                        (t) => !installed || installed.has(targetKey(home, t))
+                    ) ?? safePathJoin(folder.dirs[0], name);
+            plans.push({
+                folder,
+                name,
+                skill: findAiSkill(name, aiSkills),
+                target,
+            });
+        }
+    }
+    const names = [...new Set([...plans.map((p) => p.name), ...skipped])];
+    if (names.length === 0) {
+        return result;
+    }
+
+    const allowedRoot = await fsp.realpath(sourcePath);
+    const groupHashes = await computeAiGroupHashes(names, aiSkills, {
+        allowedRoot,
+    });
+    const digests = new Map();
+    for (const entries of (
+        await hashAiSkillFolders(names, aiSkills, { allowedRoot })
+    ).values()) {
+        for (const { name, hashes } of entries) digests.set(name, hashes);
+    }
+    for (const plan of plans) {
+        const owner = plan.folder.agents[0];
+        plan.owner = owner;
+        plan.files = agentFilesFor(plan.skill, owner, agents, 'global');
+        plan.layout = skillLayout(method, plan.files);
+        plan.digest = digests
+            .get(plan.name)
+            .get(copyFor(owner, agents, 'global'));
+        const groupChanged =
+            groupHashes[plan.skill.group] !== oldHashes[plan.skill.group];
+        plan.changed = plan.folder.agents.some((agent) => {
+            const key = `${agent}/${plan.name}`;
+            return Object.hasOwn(oldDigests, key)
+                ? oldDigests[key] !== plan.digest
+                : groupChanged;
+        });
+    }
+
+    const changedSkills = [
+        ...new Map(
+            plans.filter((p) => p.changed).map((p) => [p.name, p.skill])
+        ).values(),
+    ];
+    let dirty = new Map();
+    if (uncommitted && changedSkills.length > 0) {
+        try {
+            dirty =
+                (await uncommitted(
+                    changedSkills.map((s) => ({ name: s.name, path: s.path }))
+                )) ?? new Map();
+        } catch (err) {
+            const names = changedSkills.map((s) => s.name);
+            problem(
+                `Could not check the LaunchBridge clone for changes that are not committed (${err.message}), so these skills were not updated and keep the digests the global install recorded: ${listNames(names)}.`
+            );
+            dirty = new Map(names.map((name) => [name, null]));
+        }
+    }
+    for (const skill of changedSkills) {
+        if (dirty.has(skill.name)) {
+            result.heldBack.push({
+                name: skill.name,
+                paths: dirty.get(skill.name),
+                live: 0,
+                kept: 0,
+                missing: 0,
+            });
+        }
+    }
+    const held = new Set(result.heldBack.map((h) => h.name));
+    const noteHeld = (plan, what) => {
+        result.heldBack.find((h) => h.name === plan.name)[what] += 1;
+        return 'held';
+    };
+
+    const copy = (src, target) =>
+        copySkill(src, target, {
+            allowedRoot,
+            onSkip: (link, resolved) =>
+                warn(
+                    `  Skipped link outside the LaunchBridge source: ${link} -> ${resolved}`
+                ),
+        });
+    const reinstall = async (plan) => {
+        const who = plan.folder.agents.join(', ');
+        try {
+            await fsp.mkdir(path.dirname(plan.target), { recursive: true });
+            await removePathRecursive(plan.target);
+            if (plan.layout === 'link') {
+                await createSymlink(plan.skill.path, plan.target);
+            } else {
+                await copy(plan.skill.path, plan.target);
+            }
+            await writeAgentFiles(
+                plan.skill,
+                plan.owner,
+                plan.target,
+                agents,
+                'global'
+            );
+            muted(`  Updated AI skill: ${plan.name} (${who})`);
+            if (!result.updated.includes(plan.name)) {
+                result.updated.push(plan.name);
+            }
+            return 'installed';
+        } catch (err) {
+            problem(
+                `Could not update AI skill ${plan.name} for ${who}: ${err.message}`
+            );
+            return 'failed';
+        }
+    };
+    const leaveAlone = (target, message) => {
+        result.modifiedTargets.push(target);
+        warn(`  ${message}`);
+        return 'modified';
+    };
+    const notLinked = (target, layout, extras) =>
+        leaveAlone(
+            target,
+            `${target} ${layout === 'copy' ? 'is a folder, not a link to the LaunchBridge source' : `is not a link to the LaunchBridge source${extras.length > 0 ? ` and holds files LaunchBridge did not install (${listNames(extras)})` : ''}`}, so it was left as it is. To replace it with a link, run 'launchbridge' and choose Global.`
+        );
+    /** Whether a copy still holds what LaunchBridge installed for its agents. */
+    const holdsRecorded = async (plan) => {
+        const recorded = plan.folder.agents
+            .map((agent) => oldDigests[`${agent}/${plan.name}`])
+            .filter(Boolean);
+        return (
+            recorded.length > 0 &&
+            recorded.includes(await computeContentHash(plan.target))
+        );
+    };
+
+    /**
+     * Brings one recorded skill folder up to date, as runGlobalSync does a
+     * native skill's.
+     * @returns {Promise<'ok' | 'installed' | 'failed' | 'modified' | 'held'>}
+     */
+    const syncTarget = async (plan) => {
+        let layout;
+        try {
+            layout = await installedLayout(plan.target);
+        } catch (err) {
+            problem(`Could not check ${plan.target}: ${err.message}`);
+            return 'failed';
+        }
+        if (plan.layout === 'link') {
+            if (
+                layout === 'link' &&
+                (await installedSkillMatches(
+                    plan.target,
+                    plan.skill.path,
+                    sourcePath,
+                    { layout: 'link' }
+                ))
+            ) {
+                if (held.has(plan.name)) noteHeld(plan, 'live');
+                return 'ok';
+            }
+            if (held.has(plan.name)) {
+                return noteHeld(plan, layout === null ? 'missing' : 'kept');
+            }
+            if (layout === null || layout === 'link') return reinstall(plan);
+            if (layout !== 'per-file') {
+                return notLinked(plan.target, layout, []);
+            }
+            let extras;
+            try {
+                extras = await entriesNotInstalled(plan.target, sourcePath);
+            } catch (err) {
+                problem(`Could not check ${plan.target}: ${err.message}`);
+                return 'failed';
+            }
+            return extras.length === 0
+                ? reinstall(plan)
+                : notLinked(plan.target, layout, extras);
+        }
+        if (held.has(plan.name)) {
+            return noteHeld(plan, layout === null ? 'missing' : 'kept');
+        }
+        if (layout === null) return reinstall(plan);
+        if (
+            await installedSkillMatches(
+                plan.target,
+                plan.skill.path,
+                sourcePath,
+                { overrides: plan.files, layout: 'copy' }
+            )
+        ) {
+            return 'ok';
+        }
+        // A changed skill's copy is replaced only while it holds what
+        // LaunchBridge installed: anything else in it may be the user's.
+        if (plan.changed && layout === 'copy' && (await holdsRecorded(plan))) {
+            return reinstall(plan);
+        }
+        return leaveAlone(
+            plan.target,
+            `${plan.target} differs from what LaunchBridge installed, so it was left as it is${plan.changed ? ` and the update to ${plan.name} was not copied into it` : ''}. To install it again, run 'launchbridge' and choose Global.`
+        );
+    };
+    for (const plan of plans) {
+        plan.outcome = await syncTarget(plan);
+    }
+
+    // A skill held back keeps every recorded digest; a folder that could not
+    // be updated keeps its own, and the group of a changed one keeps its hash.
+    const keptGroups = new Set(skipped.map((n) => aiTrackingKey(n, aiSkills)));
+    for (const plan of plans) {
+        const failed = plan.outcome === 'failed';
+        if (held.has(plan.name) || (failed && plan.changed)) {
+            keptGroups.add(plan.skill.group);
+        }
+        if (held.has(plan.name) || failed) continue;
+        for (const agent of plan.folder.agents) {
+            result.newFolderHashes[`${agent}/${plan.name}`] = plan.digest;
+        }
+    }
+    for (const [group, hash] of Object.entries(groupHashes)) {
+        if (!keptGroups.has(group)) result.newHashes[group] = hash;
+    }
+
+    if (result.updated.length > 0) {
+        success(
+            `${result.updated.length} AI skill(s) reinstalled from updated source.`
+        );
+    }
+    return result;
 }

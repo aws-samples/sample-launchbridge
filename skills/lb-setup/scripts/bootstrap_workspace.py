@@ -12,8 +12,14 @@ install record (`<state>/launchbridge/global/generated/`, see
 install_script/lib/globalAssets.js):
 
     mode   whether this lb-setup is the repository's own (local) or a global one
-    check  whether the repository is safe to prepare (writes nothing)
+    check  whether the repository is safe to prepare (writes nothing); one with
+           a local install is not: its setup belongs to that install
     init   check, then create what the repository needs
+
+All three refuse a folder that is not a project: the file system's root, the
+home folder or a folder above it, an agent's user-level configuration folder
+(~/.claude, ~/.codex, ...) or a folder inside one, and a folder inside a
+user-level skills folder or the LaunchBridge state folder.
 
 `init` verifies the generated files against the global install record (in the
 user's state directory, outside every repository) before using any of them, and
@@ -24,13 +30,16 @@ creates, without writing through a symbolic link:
     .lb_workspace/config/python_deps/     pyproject.toml and constraints.txt, with
                                           their SHA-256 recorded outside the repository
     .lb_workspace/config/lb_agents_reference.md
-    AGENTS.md (when missing), or .lb_workspace/steering/AGENTS_LB.md to merge
+    AGENTS.md (when missing, removing a pending AGENTS_LB.md), or
+    .lb_workspace/steering/AGENTS_LB.md to merge (a pending one that is not
+    this version's is replaced)
     CLAUDE.md with @AGENTS.md
 
 It keeps what it set the repository up with in the repository's state folder
 (`global_setup.json`), and on a later `init` resets the setup_status.md rows
-that a change to the global install affects. It never creates or trusts
-`.venv_lb`: lb-setup builds and seals that (lb_guard.py).
+that a change to the global install affects; venv-setup also whenever it
+rewrites python_deps/ or its record. It never creates or trusts `.venv_lb`:
+lb-setup builds and seals that (lb_guard.py).
 
 Usage:
     python3 -I bootstrap_workspace.py mode  <codebase_abs_path>
@@ -38,7 +47,9 @@ Usage:
     python3 -I bootstrap_workspace.py init  <codebase_abs_path>
 
 Output is one JSON object on stdout. Exit codes: 0 OK; 1 refused (the reasons
-are in "problems", and nothing was written); 2 the command could not run (bad
+are in "problems", and nothing was written), or a file or folder could not be
+read or written ("problems" says which; init may have created part of what it
+creates, and finishes it when run again); 2 the command could not run (bad
 arguments, no global install record).
 """
 
@@ -52,6 +63,7 @@ import shutil
 import stat
 import sys
 import types
+from collections.abc import Callable
 from pathlib import Path, PurePath
 
 
@@ -80,11 +92,22 @@ STATUS_FILE = WORKSPACE / "setup_status.md"
 REFERENCE_FILE = CONFIG / "lb_agents_reference.md"
 STEERING_FILE = WORKSPACE / "steering" / "AGENTS_LB.md"
 LOCAL_MANIFEST = CONFIG / "version_manifest.json"
+# Agents that run a repository's own skills where a global install has them too.
+REPOSITORY_FIRST_AGENTS = {"kiro": "Kiro", "roo": "Roo Code"}
+# The user-level skills folders, and the agents' own folders in the home folder
+# that hold them, with Codex's home: Codex reads ~/.codex/AGENTS.md in every
+# project, and its user-level skills are in ~/.agents.
+USER_SKILLS_DIRS = tuple(
+    sorted(set(verify_integrity.AGENT_GLOBAL_SKILLS_DIRS.values()))
+)
+AGENT_CONFIG_DIRS = tuple(
+    sorted({PurePath(rel).parent.as_posix() for rel in USER_SKILLS_DIRS} | {".codex"})
+)
 AGENTS_MD = Path("AGENTS.md")
 CLAUDE_MD = Path("CLAUDE.md")
 AGENTS_MD_REF = "@AGENTS.md"
 DEPS_FILES = ("pyproject.toml", "constraints.txt")
-SETUP_RECORD = "global_setup.json"
+SETUP_RECORD = verify_integrity.GLOBAL_SETUP_RECORD
 RECORD_FORMAT = 1
 # The fields of the global install record a repository's setup depends on.
 RECORD_FIELDS = (
@@ -160,14 +183,56 @@ def install_mode(repo: Path, lb_setup: Path | None = None) -> str:
     return "local" if any(_inside(s, r) for s, r in pairs) else "global"
 
 
-def other_install_warning(repo: Path, mode: str) -> str | None:
-    """A note when the repository has the other kind of install too."""
-    if mode == "global" and (repo / LOCAL_MANIFEST).is_file():
-        return (
-            "This repository also has a local LaunchBridge install. Where both "
-            "exist, Claude Code runs the global skills and Kiro and Roo Code run "
-            "the local ones; keep one of them for this repository."
+def _local_install_agents(repo: Path) -> list[str]:
+    """The agents a repository's local install manifest names, when it can be
+    read (it is a repository file: only names this script knows are used)."""
+    try:
+        with open(repo / LOCAL_MANIFEST, encoding="utf-8") as handle:
+            data = json.loads(handle.read(1_000_000))
+    except (OSError, ValueError):
+        return []
+    agents = data.get("agents") if isinstance(data, dict) else None
+    if not isinstance(agents, list):
+        return []
+    return [a for a in agents if a in verify_integrity.AGENT_SKILLS_DIRS]
+
+
+def local_install_problem(repo: Path, mode: str) -> str | None:
+    """Why a global lb-setup must not prepare the repository: it has a local
+    install, whose status table, python_deps/ and AGENTS.md reference init would
+    replace with the global install's."""
+    if mode != "global" or not (repo / LOCAL_MANIFEST).is_file():
+        return None
+    agents = _local_install_agents(repo)
+    own = [name for key, name in REPOSITORY_FIRST_AGENTS.items() if key in agents]
+    dirs = sorted({f"{verify_integrity.AGENT_SKILLS_DIRS[a]}/" for a in agents})
+    removal = (
+        "remove the local install (the skill folders it installed"
+        + (f" in {', '.join(dirs)}" if dirs else "")
+        + f", and {LOCAL_MANIFEST.as_posix()})"
+    )
+    if own:
+        verb = "runs" if len(own) == 1 else "run"
+        way = (
+            f"set it up with {' or '.join(own)}, which {verb} the repository's own "
+            f"skills, or {removal}"
         )
+    else:
+        way = (
+            f"{removal} to use the global install here, or remove the global "
+            "install to keep the local one"
+        )
+    return (
+        f"{repo} has a local LaunchBridge install ({LOCAL_MANIFEST.as_posix()}), "
+        "and setting it up from the global install would overwrite that install's "
+        "setup. Claude Code and Cline run the global skills where both exist; keep "
+        f"one install for this repository: {way}"
+    )
+
+
+def other_install_warning(mode: str) -> str | None:
+    """A note when this lb-setup is the repository's own and a global install
+    exists too."""
     if (
         mode == "local"
         and (
@@ -176,7 +241,8 @@ def other_install_warning(repo: Path, mode: str) -> str | None:
     ):
         return (
             "A global LaunchBridge install exists too. Where both exist, Claude "
-            "Code runs the global skills and Kiro and Roo Code run the local ones."
+            "Code and Cline run the global skills, which won't set up a repository "
+            "that has a local install, and Kiro and Roo Code run the local ones."
         )
     return None
 
@@ -241,39 +307,114 @@ def path_problem(repo: Path, rel: Path, *, allow_file: bool = False) -> str | No
     return None
 
 
-def location_problems(
+def not_a_project(
     repo: PurePath,
     *,
     home: PurePath,
     state: PurePath,
-    source: PurePath | None,
+    config_dirs: list[PurePath],
     skills_dirs: list[PurePath],
+    real_root: bool = True,
 ) -> list[str]:
-    """Why a folder, given by its resolved path, is not a project to prepare:
-    the file system's root, the home folder or one above it, or a folder inside
-    the LaunchBridge source, its state folder or a user-level skills folder (or
-    one holding the state folder)."""
+    """Why a folder, given by one form of its path, is not a project at all:
+    the file system's root, the home folder or one above it, a folder inside a
+    user-level skills folder, an agent's user-level configuration folder or a
+    folder inside one, or a folder inside the LaunchBridge state folder.
+
+    A path that is a root counts as the file system's only when the folder
+    resolves to a root too (`real_root`): on Windows a drive letter can stand
+    for a folder (subst, a mapped network drive)."""
     found = []
-    if repo.parent == repo:
+    if repo.parent == repo and real_root:
         found.append(f"{repo} is the root of the file system, not a project")
     if repo == home or _inside(home, repo):
         found.append(
             f"{repo} is your home folder or a folder above it, not a project; "
             "open the project's own folder"
         )
-    if source is not None and _inside(repo, source):
-        found.append(f"{repo} is inside the LaunchBridge source ({source})")
+    in_skills = [skills for skills in skills_dirs if _inside(repo, skills)]
+    for skills in in_skills:
+        found.append(f"{repo} is inside the skills folder {skills}")
+    # Each skills folder is in an agent's folder: one reason is enough.
+    if not in_skills:
+        reason = (
+            "an agent's user-level configuration folder, not a project; open the "
+            "project's own folder"
+        )
+        for config in config_dirs:
+            if repo == config:
+                found.append(f"{repo} is {reason}")
+            elif _inside(repo, config):
+                found.append(f"{repo} is inside {config}, {reason}")
     if _inside(repo, state):
         found.append(f"{repo} is inside the LaunchBridge state folder ({state})")
-    elif _inside(state, repo):
+    return found
+
+
+def location_problems(
+    repo: PurePath,
+    *,
+    home: PurePath,
+    state: PurePath,
+    source: PurePath | None,
+    config_dirs: list[PurePath],
+    skills_dirs: list[PurePath],
+    real_root: bool = True,
+) -> list[str]:
+    """Why a folder, given by one form of its path, is not a project to
+    prepare: not_a_project's reasons, or a folder inside the LaunchBridge
+    source or one holding the state folder."""
+    found = not_a_project(
+        repo,
+        home=home,
+        state=state,
+        config_dirs=config_dirs,
+        skills_dirs=skills_dirs,
+        real_root=real_root,
+    )
+    if source is not None and _inside(repo, source):
+        found.append(f"{repo} is inside the LaunchBridge source ({source})")
+    if _inside(state, repo) and not _inside(repo, state):
         found.append(
             f"the LaunchBridge state folder {state} is inside {repo}; set "
             "XDG_CONFIG_HOME to a folder outside it"
         )
-    for skills in skills_dirs:
-        if _inside(repo, skills):
-            found.append(f"{repo} is inside the skills folder {skills}")
     return found
+
+
+# A folder as given and as resolved: one reached through a link (macOS' /tmp)
+# names the same folders. The first form that finds a reason is reported.
+PATH_FORMS: tuple[Callable[[str | Path], str], ...] = (
+    os.path.abspath,
+    os.path.realpath,
+)
+
+
+def _compared(form: Callable[[str | Path], str]) -> dict:
+    """The folders a project is compared with, in one of PATH_FORMS."""
+    home = Path.home()
+    return {
+        "home": Path(form(home)),
+        "state": Path(form(verify_integrity.state_base() / "launchbridge")),
+        "config_dirs": [Path(form(home / rel)) for rel in AGENT_CONFIG_DIRS],
+        "skills_dirs": [Path(form(home / rel)) for rel in USER_SKILLS_DIRS],
+    }
+
+
+def _is_root(repo: Path) -> bool:
+    """Whether the folder, resolved, is the root of the file system."""
+    real = Path(os.path.realpath(repo))
+    return real.parent == real
+
+
+def not_a_project_problems(repo: Path) -> list[str]:
+    """not_a_project for the folder, as given or else as resolved."""
+    real_root = _is_root(repo)
+    for form in PATH_FORMS:
+        found = not_a_project(Path(form(repo)), real_root=real_root, **_compared(form))
+        if found:
+            return found
+    return []
 
 
 def check(repo_arg: str | Path, lb_setup: Path | None = None) -> dict:
@@ -290,16 +431,21 @@ def check(repo_arg: str | Path, lb_setup: Path | None = None) -> dict:
     if hasattr(os, "getuid") and repo.stat().st_uid != os.getuid():
         problems.append(f"{repo} is not owned by the current user")
     source = verify_integrity.global_install_source()
-    problems += location_problems(
-        Path(os.path.realpath(repo)),
-        home=Path(os.path.realpath(Path.home())),
-        state=Path(os.path.realpath(verify_integrity.state_base() / "launchbridge")),
-        source=Path(os.path.realpath(source)) if source else None,
-        skills_dirs=[
-            Path(os.path.realpath(Path.home() / rel))
-            for rel in sorted(set(verify_integrity.AGENT_GLOBAL_SKILLS_DIRS.values()))
-        ],
-    )
+    real_root = _is_root(repo)
+    for form in PATH_FORMS:
+        found = location_problems(
+            Path(form(repo)),
+            source=Path(form(source)) if source else None,
+            real_root=real_root,
+            **_compared(form),
+        )
+        if found:
+            problems += found
+            break
+    mode = install_mode(repo, lb_setup)
+    found = local_install_problem(repo, mode)
+    if found:
+        problems.append(found)
 
     dirs = [*FIXED_DIRS, *_layout_dirs(), ARTIFACTS, VENV]
     for rel in dirs:
@@ -337,7 +483,7 @@ def check(repo_arg: str | Path, lb_setup: Path | None = None) -> dict:
                 )
 
     if not problems:
-        note = other_install_warning(repo, install_mode(repo, lb_setup))
+        note = other_install_warning(mode)
         if note:
             warnings.append(note)
     problems = list(dict.fromkeys(lb_guard.printable(p) for p in problems))
@@ -391,13 +537,27 @@ def _ensure_dir(repo: Path, rel: Path, created: list[str]) -> None:
 def parse_status(text: str) -> dict[str, str]:
     """Rows of setup_status.md, by name (as setupStatus.js reads them)."""
     rows: dict[str, str] = {}
-    for line in text.split("\n"):
+    for line in text.splitlines():
         match = STATUS_ROW.match(line)
         if match:
             name, status = match.group(1).strip(), match.group(2).strip()
             if name not in ("Skill", "Skill / Task") and not set(name) <= {"-"}:
                 rows[name] = status
     return rows
+
+
+def existing_status(repo: Path) -> dict[str, str] | None:
+    """The rows of the repository's setup_status.md, or None when it has none.
+    One that is there but can't be read raises OSError: taken for none, it
+    would be replaced with the template."""
+    path = repo / STATUS_FILE
+    if not os.path.lexists(path):
+        return None
+    data = path.read_bytes()
+    try:
+        return parse_status(data.decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise Refused(f"{path} could not be read: {exc}; save it as UTF-8") from exc
 
 
 def render_status(rows: list[tuple[str, str]]) -> str:
@@ -520,6 +680,7 @@ def init(repo: Path, lb_setup: Path | None = None) -> dict:
         return {**checked, "created": [], "updated": [], "staged": []}
     warnings = list(checked["warnings"])
     manifest = load_manifest(repo, lb_setup)
+    existing = existing_status(repo)
     assets = generated_dir()
     created: list[str] = []
     updated: list[str] = []
@@ -532,7 +693,8 @@ def init(repo: Path, lb_setup: Path | None = None) -> dict:
             return False
         existed = os.path.lexists(path)
         _write_file(path, data)
-        (updated if existed else created).append(rel.as_posix())
+        if rel.as_posix() not in created + updated:
+            (updated if existed else created).append(rel.as_posix())
         return True
 
     # 1. Folders.
@@ -547,37 +709,54 @@ def init(repo: Path, lb_setup: Path | None = None) -> dict:
             _ensure_dir(repo, rel, created)
 
     # 2. The status table, with what changed since the last init reset.
-    record_path = venv_identity.record_path(repo, SETUP_RECORD)
-    try:
-        previous = json.loads(record_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        previous = None
+    record_path = verify_integrity.repo_state_dir(repo) / SETUP_RECORD
+    previous = verify_integrity.global_setup_record(repo)
     template = list(
         parse_status((assets / "setup_status.md").read_text(encoding="utf-8")).items()
     )
-    existing_text = _read(repo / STATUS_FILE)
-    if existing_text is None:
-        rows = template
-    else:
-        rows = merge_status(parse_status(existing_text.decode("utf-8")), template)
+    rows = template if existing is None else merge_status(existing, template)
     resets: dict[str, str] = {}
     changes = status_resets(previous, manifest) if isinstance(previous, dict) else {}
-    if existing_text is not None:
+    if existing is not None:
         rows = [
             (n, changes[n] if n in changes and s != "not installed" else s)
             for n, s in rows
         ]
         resets = {n: s for n, s in changes.items() if dict(rows).get(n) == s}
-    put(STATUS_FILE, render_status(rows).encode("utf-8"))
+
+    def reset(name: str) -> bool:
+        """Sets the row `name` to `not started` when it has another status."""
+        nonlocal rows
+        if dict(rows).get(name) in (None, "not started"):
+            return False
+        rows = [(n, "not started" if n == name else s) for n, s in rows]
+        resets[name] = "not started"
+        return True
 
     # 3. python_deps, recreated when it is not exactly the generated files, and
     #    its record outside the repository (what venv_identity.py deps checks).
+    #    .venv_lb was built from what they replace, so venv-setup runs again;
+    #    the status table is written first, so that holds if a write fails.
     deps = {n: (assets / "python_deps" / n).read_bytes() for n in DEPS_FILES}
     deps_dir = repo / PYTHON_DEPS
     present = sorted(p.name for p in deps_dir.iterdir()) if deps_dir.is_dir() else []
-    if present != sorted(DEPS_FILES) or any(
+    replace_deps = present != sorted(DEPS_FILES) or any(
         _read(deps_dir / n) != data for n, data in deps.items()
-    ):
+    )
+    digests = {n: hashlib.sha256(data).hexdigest() for n, data in deps.items()}
+    deps_record = json.dumps(digests, indent=2) + "\n"
+    record_file = venv_identity.record_path(repo, venv_identity.DEPS_RECORD_FILE)
+    # Compared by what it records, not byte for byte: it is written in text
+    # mode, with CRLF line endings on Windows.
+    try:
+        recorded = json.loads(_read(record_file) or b"null")
+    except ValueError:
+        recorded = None
+    rewrite_record = recorded != digests
+    if replace_deps or rewrite_record:
+        reset("venv-setup")
+    put(STATUS_FILE, render_status(rows).encode("utf-8"))
+    if replace_deps:
         if deps_dir.exists():
             shutil.rmtree(deps_dir)
             updated.append(PYTHON_DEPS.as_posix() + "/")
@@ -586,15 +765,7 @@ def init(repo: Path, lb_setup: Path | None = None) -> dict:
         deps_dir.mkdir()
         for name, data in deps.items():
             _write_file(deps_dir / name, data)
-    deps_record = (
-        json.dumps(
-            {n: hashlib.sha256(data).hexdigest() for n, data in deps.items()},
-            indent=2,
-        )
-        + "\n"
-    )
-    record_file = venv_identity.record_path(repo, venv_identity.DEPS_RECORD_FILE)
-    if _read(record_file) != deps_record.encode("utf-8"):
+    if rewrite_record:
         venv_identity._write_private(record_file, deps_record)
 
     # 4. The AGENTS.md reference, AGENTS.md itself, and CLAUDE.md.
@@ -602,37 +773,45 @@ def init(repo: Path, lb_setup: Path | None = None) -> dict:
     put(REFERENCE_FILE, reference)
     agents_md = repo / AGENTS_MD
     # As a local install's updater does: on the first setup, and after the
-    # reference or the skills changed, an existing AGENTS.md gets the new
-    # reference staged beside it for lb-setup to merge.
+    # reference or the skills changed, an existing AGENTS.md (or the file a
+    # link there points to) gets the new reference staged beside it for
+    # lb-setup to merge.
     reference_changed = not isinstance(previous, dict) or "agents-md-merge" in changes
     pending = _read(repo / STEERING_FILE)
-    if os.path.islink(agents_md):
-        _ensure_dir(repo, STEERING_FILE.parent, created)
-        if put(STEERING_FILE, reference):
-            staged.append(STEERING_FILE.as_posix())
-        notes.append(
-            "AGENTS.md is a symbolic link, so it was not changed. Merge "
-            f"{STEERING_FILE.as_posix()} into the file it points to."
-        )
-    elif not agents_md.exists():
+    linked = os.path.islink(agents_md)
+    if not linked and not agents_md.exists():
         put(AGENTS_MD, reference)
+        if pending is not None:
+            (repo / STEERING_FILE).unlink()
+            notes.append(
+                f"{STEERING_FILE.as_posix()} was removed: AGENTS.md was created "
+                "from this LaunchBridge version, so there is nothing to merge."
+                if pending == reference
+                else f"{STEERING_FILE.as_posix()} did not match this LaunchBridge "
+                "version and was removed: AGENTS.md was created from this version, "
+                "so there is nothing to merge."
+            )
     elif pending is not None and pending != reference:
         # A pending copy is LaunchBridge's own instructions once merged: one
         # that isn't this version's (older, or arrived with the repository)
         # is replaced.
         put(STEERING_FILE, reference)
         staged.append(STEERING_FILE.as_posix())
+        notes.append(
+            f"{STEERING_FILE.as_posix()} did not match this LaunchBridge version "
+            "and was replaced."
+        )
     elif pending is None and reference_changed and _read(agents_md) != reference:
         _ensure_dir(repo, STEERING_FILE.parent, created)
         put(STEERING_FILE, reference)
         staged.append(STEERING_FILE.as_posix())
-    if staged and "agents-md-merge" in dict(rows):
-        if dict(rows)["agents-md-merge"] != "not started":
-            rows = [
-                (n, "not started" if n == "agents-md-merge" else s) for n, s in rows
-            ]
-            resets["agents-md-merge"] = "not started"
-            put(STATUS_FILE, render_status(rows).encode("utf-8"))
+    if linked and (staged or pending is not None):
+        notes.append(
+            "AGENTS.md is a symbolic link, so it was not changed. Merge "
+            f"{STEERING_FILE.as_posix()} into the file it points to."
+        )
+    if staged and reset("agents-md-merge"):
+        put(STATUS_FILE, render_status(rows).encode("utf-8"))
 
     claude_md = repo / CLAUDE_MD
     if os.path.islink(claude_md):
@@ -668,6 +847,19 @@ def init(repo: Path, lb_setup: Path | None = None) -> dict:
 # ── command line ─────────────────────────────────────────────────────────────
 
 
+def _failed(*problems: str) -> dict:
+    return {"ok": False, "problems": [lb_guard.printable(p) for p in problems]}
+
+
+def _io_problem(exc: OSError | UnicodeDecodeError) -> str:
+    """What could not be read or written, and the error."""
+    name = getattr(exc, "filename", None)
+    if name is None:
+        return f"a file or folder could not be read or written: {exc}"
+    reason = getattr(exc, "strerror", None) or exc
+    return f"{name} could not be read or written: {reason}"
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 3 or argv[1] not in ("mode", "check", "init"):
         print(
@@ -681,37 +873,33 @@ def main(argv: list[str]) -> int:
             if not repo.is_dir():
                 print(f"{repo} is not an existing folder", file=sys.stderr)
                 return 2
-            mode = install_mode(repo)
-            note = other_install_warning(repo, mode)
-            result = {
-                "mode": mode,
-                "skill_dir": str(skill_dir()),
-                "repo": str(repo),
-                "warnings": [note] if note else [],
-            }
-            print(json.dumps(result, indent=2))
-            return 0
-        if command == "check":
+            problems = not_a_project_problems(repo)
+            if not problems:
+                mode = install_mode(repo)
+                note = other_install_warning(mode)
+                result = {
+                    "mode": mode,
+                    "skill_dir": str(skill_dir()),
+                    "repo": str(repo),
+                    "warnings": [note] if note else [],
+                }
+                print(json.dumps(result, indent=2))
+                return 0
+            result = _failed(*problems)
+        elif command == "check":
             result = check(repo)
-            print(json.dumps(result, indent=2))
-            return 0 if result["ok"] else 1
-        try:
-            result = init(repo)
-        except CannotRun as exc:
-            print(
-                json.dumps(
-                    {"ok": False, "problems": [lb_guard.printable(str(exc))]},
-                    indent=2,
-                )
-            )
-            return 2
-        except Refused as exc:
-            result = {"ok": False, "problems": [lb_guard.printable(str(exc))]}
-        print(json.dumps(result, indent=2))
-        return 0 if result["ok"] else 1
-    except OSError as exc:
-        print(f"bootstrap_workspace: {command} failed: {exc}", file=sys.stderr)
-        return 2
+        else:
+            try:
+                result = init(repo)
+            except CannotRun as exc:
+                print(json.dumps(_failed(str(exc)), indent=2))
+                return 2
+            except Refused as exc:
+                result = _failed(str(exc))
+    except (OSError, UnicodeDecodeError) as exc:
+        result = _failed(_io_problem(exc))
+    print(json.dumps(result, indent=2))
+    return 0 if result["ok"] else 1
 
 
 if __name__ == "__main__":

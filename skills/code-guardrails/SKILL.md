@@ -32,8 +32,9 @@ See `## Untrusted Content` in `AGENTS.md` for the full boundary.
    - `project_context.md` — product overview, tech stack, folder structure, key conventions
 2. **Scope Doc** — interactively created with the user
    - `scope.md` — what features/changes are allowed vs off-limits
-3. **Best Practices Docs** — pre-written docs provided by the user
-   - Copied from `assets/best_practices/` in this skill into the agent's guardrails folder
+3. **Best Practices Docs** — pre-written docs
+   - `aws_references.md`, which ships in this skill's `assets/best_practices/`, copied into the guardrails folder
+   - The user's own, which belong to the project: they go straight into the guardrails folder, as `best_practices_{name}.md`
 4. **Feature Guides** — delivery team docs for anticipated feature requests
    - Created interactively or imported from user-provided files
 
@@ -48,6 +49,8 @@ All guardrail files are always written to a single shared location:
 This is the canonical source of truth for all guardrail files, regardless of which coding agent is in use. This ensures consistency across agents and avoids duplication drift.
 
 Additionally, for Kiro, guardrail files are also copied into `.kiro/steering/` so they are auto-included via Kiro's native steering mechanism.
+
+Never add, change or remove a file in this skill's own folder, and never ask the user to: in a global install that folder serves every project, and in a symlink install it is a link to the skill's folder in the LaunchBridge clone, so a file put there reaches every other project's guardrails. lb-setup's integrity check also reports a changed skill folder as modified, and then skips the skill.
 
 ### Guardrails Must Be Tracked in Git
 
@@ -123,10 +126,9 @@ Write this file to `.lb_workspace/guardrails/`. If Kiro is detected, also copy i
 
 ### Step 2: Copy Best Practices Docs
 
-Check if `assets/best_practices/` in this skill contains any files.
-
-- If yes: copy them into `.lb_workspace/guardrails/`, and also into `.kiro/steering/` if Kiro is detected
-- If no: ask the user if they have best practices docs to provide. If they do, ask them to place the files in `assets/best_practices/` and re-run, or provide the content directly.
+- Copy `assets/best_practices/aws_references.md` from this skill into `.lb_workspace/guardrails/`, and also into `.kiro/steering/` if Kiro is detected. It is the only file to take from this skill's folder. Any other file in `assets/best_practices/` was added after LaunchBridge installed the skill, possibly for another project: don't copy it or use it. Tell the user where it is, and that a doc for this project goes in `.lb_workspace/guardrails/` as `best_practices_{name}.md` instead.
+- The user's own best practices docs are in `.lb_workspace/guardrails/`, named `best_practices_{name}.md`. If Kiro is detected, also copy them into `.kiro/steering/`.
+- If there are none: when you summarize what was created, tell the user that best practices docs of their own go in `.lb_workspace/guardrails/` as `best_practices_{name}.md`, picked up when this skill runs again, or that they can provide the content directly, which you write there. Never put them in this skill's folder (see Guardrails Location).
 
 **Inclusion classification:** Best practices docs use frontmatter to indicate when they should be loaded:
 
@@ -276,7 +278,7 @@ When the user asks to update or regenerate:
 - **Project context**: re-scan the codebase and regenerate, but show a diff to the user before overwriting
 - **Scope**: show current scope doc and ask what to change
 - **Feature guides**: ask which guide to update or if adding a new one
-- **Best practices**: check if assets folder has new files to copy
+- **Best practices**: copy `assets/best_practices/aws_references.md` again if it changed, and for Kiro copy any `best_practices_*.md` the user added to `.lb_workspace/guardrails/` into `.kiro/steering/`
 
 ## Important
 

@@ -6,6 +6,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
+import fsSync from 'fs';
 import path from 'path';
 import os from 'os';
 import {
@@ -888,6 +889,74 @@ describe('copySkill', () => {
                 path.join(targetDir, 'empty-dir')
             );
             expect(contents).toHaveLength(0);
+        });
+    });
+
+    describe('onCreate', () => {
+        async function makeSource() {
+            const sourceDir = path.join(tempDir, 'source-skill');
+            await fs.mkdir(path.join(sourceDir, 'references', 'deeper'), {
+                recursive: true,
+            });
+            await fs.writeFile(path.join(sourceDir, 'SKILL.md'), '# Skill');
+            await fs.writeFile(
+                path.join(sourceDir, 'references', 'deeper', 'a.md'),
+                'a'
+            );
+            return sourceDir;
+        }
+
+        it('is called once, when the copy has made its own folder', async () => {
+            const sourceDir = await makeSource();
+            const targetDir = path.join(tempDir, 'target-skill');
+            const seen = [];
+
+            await copySkill(sourceDir, targetDir, {
+                onCreate: () => seen.push(fsSync.readdirSync(targetDir)),
+            });
+
+            expect(seen).toEqual([[]]);
+        });
+
+        it('has been called when the copy fails part-way', async () => {
+            const sourceDir = await makeSource();
+            await fs.symlink('missing', path.join(sourceDir, 'zz-broken'));
+            let calls = 0;
+
+            await expect(
+                copySkill(sourceDir, path.join(tempDir, 'target-skill'), {
+                    allowedRoot: tempDir,
+                    onCreate: () => calls++,
+                })
+            ).rejects.toThrow(/Broken symlink/);
+            expect(calls).toBe(1);
+        });
+
+        it('is not called when the copy makes nothing', async () => {
+            const sourceDir = await makeSource();
+            const existing = path.join(tempDir, 'someone-elses');
+            await fs.mkdir(existing);
+            let calls = 0;
+            const onCreate = () => calls++;
+
+            await expect(
+                copySkill(sourceDir, existing, { onCreate })
+            ).rejects.toThrow(/Target path already exists/);
+            await expect(
+                copySkill(
+                    path.join(tempDir, 'missing'),
+                    path.join(tempDir, 't'),
+                    {
+                        onCreate,
+                    }
+                )
+            ).rejects.toThrow(/Source path does not exist/);
+            await expect(
+                copySkill(sourceDir, path.join(tempDir, 'no-parent', 't'), {
+                    onCreate,
+                })
+            ).rejects.toThrow(/Failed to create directory/);
+            expect(calls).toBe(0);
         });
     });
 });

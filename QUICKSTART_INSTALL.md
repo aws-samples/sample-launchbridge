@@ -30,19 +30,19 @@ This installs the `launchbridge` command. The first time you run `launchbridge` 
 
 ### Alternative: clone the repository (development or signed releases)
 
-To use a specific release, check out its tag after cloning (for example `git checkout v1.1.0`), and verify the tag's signature first, as described in [Verifying a release](README.md#verifying-a-release):
+To use a specific release, check out its tag after cloning (for example `git checkout v1.3.0`), and verify the tag's signature first, as described in [Verifying a release](README.md#verifying-a-release):
 
 ```bash
 git clone https://github.com/aws-samples/sample-launchbridge.git
 cd sample-launchbridge
-git -c gpg.ssh.allowedSignersFile=~/.config/launchbridge/allowed_signers verify-tag v1.1.0
-git checkout v1.1.0
+git -c gpg.ssh.allowedSignersFile=~/.config/launchbridge/allowed_signers verify-tag v1.3.0
+git checkout v1.3.0
 npm run setup
 ```
 
 `npm run setup` initializes the git submodules, installs the CLI dependencies from the lockfile, and links the `launchbridge` command globally on your machine.
 
-Clone the repository rather than downloading it as a ZIP: updates need the `.git` folder to fetch later releases. On a release tag, move to a newer release by verifying and checking out its tag, then re-running `launchbridge` in your target project; `launchbridge update` follows a branch and stops on a tag (see [Updating LaunchBridge](README.md#updating-launchbridge)).
+Clone the repository rather than downloading it as a ZIP: updates need the `.git` folder to fetch later releases. On a release tag, move to a newer release by verifying and checking out its tag, then running `launchbridge` again: from any folder, choosing Global, for a global install, or in your target project, choosing Local, for a local one; `launchbridge update` follows a branch and stops on a tag (see [Updating LaunchBridge](README.md#updating-launchbridge)).
 
 ---
 
@@ -57,14 +57,14 @@ launchbridge
 The installer will walk you through a short set of prompts:
 
 1. **Agent** — select your coding agent (e.g. Kiro, Claude Code)
-2. **Scope** — **Global** (default) installs the skills in your agent's user-level folder (for example `~/.claude/skills`, or `~/.agents/skills` for Codex), for every project, and changes no repository. **Local** installs them into the current repository only, which then carries its own copy.
+2. **Scope** — **Global** (default) installs the skills in your agent's user-level folder (for example `~/.claude/skills`, or `~/.agents/skills` for Codex), for every project, and changes no repository. **Local** installs them into the current repository only, which then carries its own copy. In a folder that already has a local install, Local is the default, so the run updates that install.
 3. **Install method** — choose `copy`, or `symlink` to link each skill folder to the LaunchBridge clone so `launchbridge update` changes them in place
 4. **Skills** — select which skills to install (select all to get the full suite). This includes the native LaunchBridge skills plus the optional AI skill bundles from the ai-skills library: **AI Spec-Driven Development** (the SDD workflow `/ai-create → /ai-research → /ai-plan → /ai-implement → /ai-archive` + the `ai-workflow` orchestrator), **AI Architecture Decisions**, **AI Agent Context**, **AI Development Process**, **AI Prose Documents** and **AI Software Documentation**.
 5. **Confirm** — review the summary and confirm
 
 When it finishes, you'll see a success banner and a note to run `lb-setup`.
 
-For scripted installs, `--scope global|local` skips the scope prompt; see [Non-Interactive CLI Flags](docs/USER_GUIDE.md#non-interactive-cli-flags).
+For scripted installs, `--scope global|local` skips the scope prompt (with `--yes` and no `--scope`, the installer takes the prompt's default); see [Non-Interactive CLI Flags](docs/USER_GUIDE.md#non-interactive-cli-flags).
 
 ---
 
@@ -82,7 +82,7 @@ or
 Initialize LaunchBridge for this project
 ```
 
-With a global install, do this in each project you want to use LaunchBridge in. The first run in a project checks that the folder is safe to prepare, then creates `.lb_workspace/` there.
+With a global install, do this in each project you want to use LaunchBridge in. The first run in a project checks that the folder is safe to prepare, then creates `.lb_workspace/` there. It won't prepare a project that has its own local install; keep one of the two for each project.
 
 `lb-setup` will:
 

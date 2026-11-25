@@ -19,9 +19,13 @@ import { namesUnder } from '../../lib/installedTargets.js';
 import { sharedSkillsDirectories } from '../../lib/aiSkills.js';
 import {
     GLOBAL_MANIFEST,
+    GLOBAL_PENDING,
     globalGeneratedDir,
     globalStateDir,
     readGlobalManifest,
+    readGlobalPending,
+    removeGlobalPending,
+    writeGlobalPending,
     writeGlobalState,
 } from '../../lib/stateDir.js';
 import { buildLifecycleReport } from '../../lib/reporter.js';
@@ -38,6 +42,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const INSTALLER = path.resolve(HERE, '..', '..', 'index.js');
 const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
 const isWindows = process.platform === 'win32';
+const isRoot = process.getuid?.() === 0;
 const hasAiSubmodule = fs.existsSync(
     path.join(
         REPO_ROOT,
@@ -151,6 +156,53 @@ describe('global state directory', () => {
         expect((await readGlobalManifest())?.version).toBe('1.2.0');
         await writeGlobalState(GLOBAL_MANIFEST, 'not json');
         expect(await readGlobalManifest()).toBeNull();
+    });
+
+    it.skipIf(isWindows)(
+        'lists the skill folders an install is installing, for the user only, until it is removed',
+        async () => {
+            expect(await readGlobalPending()).toBeNull();
+
+            await writeGlobalPending([
+                '.kiro/skills/lb-setup',
+                '.claude/skills/lb-setup',
+                '.kiro/skills/lb-setup',
+            ]);
+
+            const file = path.join(globalStateDir(), GLOBAL_PENDING);
+            expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+            expect(fs.statSync(globalStateDir()).mode & 0o777).toBe(0o700);
+            expect(JSON.parse(fs.readFileSync(file, 'utf-8'))).toEqual({
+                targets: ['.claude/skills/lb-setup', '.kiro/skills/lb-setup'],
+            });
+            expect(await readGlobalPending()).toEqual(
+                new Set(['.claude/skills/lb-setup', '.kiro/skills/lb-setup'])
+            );
+
+            await removeGlobalPending();
+            expect(fs.readdirSync(globalStateDir())).toEqual([]);
+            expect(await readGlobalPending()).toBeNull();
+            await removeGlobalPending();
+        }
+    );
+
+    it('refuses a list it cannot read rather than taking it for none', async () => {
+        await writeGlobalState(GLOBAL_PENDING, 'not json');
+        await expect(readGlobalPending()).rejects.toThrow(SyntaxError);
+
+        for (const text of ['null', '["~/.claude/skills/lb-setup"]', '{}']) {
+            await writeGlobalState(GLOBAL_PENDING, text);
+            await expect(readGlobalPending()).rejects.toThrow(
+                'it has no "targets" list'
+            );
+        }
+
+        // A folder in place of the file can't be read either.
+        await removeGlobalPending();
+        fs.mkdirSync(path.join(globalStateDir(), GLOBAL_PENDING));
+        await expect(readGlobalPending()).rejects.toMatchObject({
+            code: 'EISDIR',
+        });
     });
 });
 
@@ -925,6 +977,271 @@ describe.skipIf(!hasGit || isWindows)('launchbridge --scope global', () => {
         expect(result.stderr).toContain("Invalid scope: 'system'");
     });
 
+    it('refuses agents whose skills folders are one folder through a link, writing nothing', () => {
+        const claude = path.join(ctx.home, '.claude', 'skills');
+        const kiro = path.join(ctx.home, '.kiro', 'skills');
+        fs.mkdirSync(claude, { recursive: true });
+        fs.mkdirSync(path.dirname(kiro));
+        fs.symlinkSync(claude, kiro);
+        const skills = hasAiSubmodule ? ['ai-plan', 'lb-setup'] : ['lb-setup'];
+        const args = ['--skills', skills.join(','), '--method', 'symlink'];
+
+        const result = install(
+            '--scope',
+            'global',
+            '--agent',
+            'claude,kiro',
+            ...args,
+            '--yes'
+        );
+
+        expect(result.status, result.stdout + result.stderr).toBe(1);
+        expect(result.stdout).toContain(
+            `Refusing to install: ${claude} (Claude Code) and ${kiro} (Kiro) are the same folder (${claude}), through a link. ` +
+                'Select Claude Code or Kiro, not both (the other reads the same skills through the link), or make the two folders separate.'
+        );
+        expect(fs.readdirSync(claude)).toEqual([]);
+        expect(fs.existsSync(path.join(ctx.state, 'launchbridge'))).toBe(false);
+
+        const one = install(
+            '--scope',
+            'global',
+            '--agent',
+            'kiro',
+            ...args,
+            '--yes'
+        );
+        expect(one.status, one.stdout + one.stderr).toBe(0);
+        expect(fs.readdirSync(claude).sort()).toEqual(skills);
+    }, 120000);
+
+    describe('an install that does not finish', () => {
+        const args = (
+            agent = 'claude',
+            skills = 'lb-setup,testing-framework'
+        ) => [
+            '--scope',
+            'global',
+            '--agent',
+            agent,
+            '--skills',
+            skills,
+            '--method',
+            'copy',
+            '--yes',
+        ];
+        const globalDir = () => path.join(ctx.state, 'launchbridge', 'global');
+        const pendingFile = () => path.join(globalDir(), GLOBAL_PENDING);
+
+        // What a run stopped in the middle of a copy leaves: the folders it
+        // had started on listed, each copied but the last, which has only
+        // its SKILL.md. Returns that last folder.
+        async function stopWhileCopying(listed) {
+            await writeGlobalPending(listed);
+            for (const [i, key] of listed.entries()) {
+                const skill = path.basename(key);
+                const dir = path.join(ctx.home, ...key.split('/'));
+                if (i < listed.length - 1) {
+                    fs.cpSync(path.join(REPO_ROOT, 'skills', skill), dir, {
+                        recursive: true,
+                    });
+                } else {
+                    fs.mkdirSync(dir, { recursive: true });
+                    fs.copyFileSync(
+                        path.join(REPO_ROOT, 'skills', skill, 'SKILL.md'),
+                        path.join(dir, 'SKILL.md')
+                    );
+                }
+            }
+            return path.join(ctx.home, ...listed.at(-1).split('/'));
+        }
+
+        it.skipIf(isRoot)(
+            'is refused, with nothing installed, when the state folder cannot be written',
+            () => {
+                fs.mkdirSync(ctx.state);
+                fs.chmodSync(ctx.state, 0o555);
+                let result;
+                try {
+                    result = install(...args('claude,kiro'));
+                } finally {
+                    fs.chmodSync(ctx.state, 0o755);
+                }
+
+                expect(result.status, result.stdout + result.stderr).toBe(1);
+                expect(result.stdout).toContain(
+                    `Cannot write the global install record in ${globalDir()}: EACCES`
+                );
+                expect(result.stdout).toContain('Nothing was installed');
+                expect(fs.readdirSync(ctx.home)).toEqual([]);
+                expect(fs.readdirSync(ctx.state)).toEqual([]);
+            },
+            120000
+        );
+
+        it('exits 1 and keeps the list of what it installed when it cannot write its record, which the next run finishes', async () => {
+            // A folder where the record goes, which a file can't replace.
+            const record = path.join(globalDir(), GLOBAL_MANIFEST);
+            fs.mkdirSync(path.join(record, 'in-the-way'), { recursive: true });
+
+            const failed = install(...args());
+
+            expect(failed.status, failed.stdout + failed.stderr).toBe(1);
+            expect(failed.stdout).toContain(
+                'Could not write the global install record'
+            );
+            expect(await readGlobalPending()).toEqual(
+                new Set([
+                    '.claude/skills/lb-setup',
+                    '.claude/skills/testing-framework',
+                ])
+            );
+
+            fs.rmSync(record, { recursive: true });
+            const again = install(...args());
+
+            expect(again.status, again.stdout + again.stderr).toBe(0);
+            expect(again.stdout).toContain(
+                'An earlier global install did not finish'
+            );
+            expect(again.stdout).not.toContain(
+                'was not installed by LaunchBridge'
+            );
+            expect(manifest().installedTargets).toEqual([
+                '.claude/skills/lb-setup',
+                '.claude/skills/testing-framework',
+            ]);
+            expect(fs.existsSync(pendingFile())).toBe(false);
+        }, 120000);
+
+        it('is finished by the next --yes run, which replaces the folder it left half-copied', async () => {
+            const listed = [
+                '.claude/skills/lb-setup',
+                '.claude/skills/testing-framework',
+                '.kiro/skills/lb-setup',
+            ];
+            const half = await stopWhileCopying(listed);
+
+            const again = install(...args('claude,kiro'));
+
+            expect(again.status, again.stdout + again.stderr).toBe(0);
+            expect(again.stdout).not.toContain(
+                'was not installed by LaunchBridge'
+            );
+            expect(manifest().installedTargets).toEqual([
+                ...listed,
+                '.kiro/skills/testing-framework',
+            ]);
+            expect(fs.existsSync(pendingFile())).toBe(false);
+            expect(
+                fs.existsSync(
+                    path.join(half, 'scripts', 'bootstrap_workspace.py')
+                )
+            ).toBe(true);
+        }, 120000);
+
+        it('keeps listing the folders of an agent the next run does not select, until a run for that agent finishes them', async () => {
+            const half = await stopWhileCopying([
+                '.claude/skills/lb-setup',
+                '.claude/skills/testing-framework',
+                '.kiro/skills/lb-setup',
+            ]);
+
+            const claudeOnly = install(...args());
+
+            expect(
+                claudeOnly.status,
+                claudeOnly.stdout + claudeOnly.stderr
+            ).toBe(0);
+            expect(claudeOnly.stdout).toContain(
+                `These skill folders a global install did not finish may be incomplete: ${half}.`
+            );
+            expect(manifest().installedTargets).toEqual([
+                '.claude/skills/lb-setup',
+                '.claude/skills/testing-framework',
+            ]);
+            expect(await readGlobalPending()).toEqual(
+                new Set(['.kiro/skills/lb-setup'])
+            );
+
+            const both = install(...args('claude,kiro'));
+
+            expect(both.status, both.stdout + both.stderr).toBe(0);
+            expect(both.stdout).not.toContain(
+                'was not installed by LaunchBridge'
+            );
+            expect(manifest().installedTargets).toEqual([
+                '.claude/skills/lb-setup',
+                '.claude/skills/testing-framework',
+                '.kiro/skills/lb-setup',
+                '.kiro/skills/testing-framework',
+            ]);
+            expect(fs.existsSync(pendingFile())).toBe(false);
+            expect(
+                fs.existsSync(
+                    path.join(half, 'scripts', 'bootstrap_workspace.py')
+                )
+            ).toBe(true);
+        }, 120000);
+
+        it("keeps a half-copied folder of a skill the next runs do not select LaunchBridge's, and installs it again once the skill is", async () => {
+            const half = await stopWhileCopying([
+                '.claude/skills/lb-setup',
+                '.claude/skills/testing-framework',
+            ]);
+
+            for (const run of ['first', 'second']) {
+                const narrowed = install(...args('claude', 'lb-setup'));
+
+                expect(narrowed.status, narrowed.stdout + narrowed.stderr).toBe(
+                    0
+                );
+                expect(narrowed.stdout, run).toContain(
+                    'Not removing 1 skill(s) no longer selected'
+                );
+                expect(narrowed.stdout, run).not.toContain('treated as yours');
+                expect(manifest().installedTargets, run).toEqual([
+                    '.claude/skills/lb-setup',
+                    '.claude/skills/testing-framework',
+                ]);
+                expect(await readGlobalPending(), run).toEqual(
+                    new Set(['.claude/skills/testing-framework'])
+                );
+            }
+
+            const again = install(...args());
+
+            expect(again.status, again.stdout + again.stderr).toBe(0);
+            expect(fs.readdirSync(half).sort()).toEqual(
+                fs
+                    .readdirSync(
+                        path.join(REPO_ROOT, 'skills', 'testing-framework')
+                    )
+                    .sort()
+            );
+            expect(fs.existsSync(pendingFile())).toBe(false);
+        }, 120000);
+
+        it('stops, with nothing installed, when it cannot read the list an unfinished install left', async () => {
+            const half = await stopWhileCopying(['.claude/skills/lb-setup']);
+            fs.writeFileSync(pendingFile(), 'not json');
+
+            const result = install(...args());
+
+            expect(result.status, result.stdout + result.stderr).toBe(1);
+            expect(result.stdout).toContain(
+                `Cannot read ${pendingFile()}, the list of skill folders an earlier global install did not finish`
+            );
+            expect(result.stdout).toContain('Nothing was installed');
+            expect(fs.readFileSync(pendingFile(), 'utf-8')).toBe('not json');
+            expect(fs.readdirSync(path.dirname(half))).toEqual(['lb-setup']);
+            expect(fs.readdirSync(half)).toEqual(['SKILL.md']);
+            expect(fs.existsSync(path.join(globalDir(), GLOBAL_MANIFEST))).toBe(
+                false
+            );
+        }, 120000);
+    });
+
     describe('re-runs', () => {
         const globalRun = (skills, method = 'copy', agent = 'claude,kiro') =>
             install(
@@ -1100,6 +1417,13 @@ describe.skipIf(!hasGit || isWindows)('launchbridge --scope global', () => {
                 fs.existsSync(path.join(skillsDir(), 'testing-framework'))
             ).toBe(true);
             expect(manifest().skills).toEqual(['lb-setup']);
+            // Still LaunchBridge's, for a later run to remove or take back.
+            expect(manifest().installedTargets).toEqual([
+                '.claude/skills/lb-setup',
+                '.claude/skills/testing-framework',
+                '.kiro/skills/lb-setup',
+                '.kiro/skills/testing-framework',
+            ]);
         }, 120000);
 
         it('leaves a same-named folder it did not install, on every run', () => {
@@ -1205,8 +1529,14 @@ describe.skipIf(!hasGit || isWindows)('launchbridge --scope global', () => {
             const again = globalRun(skills, 'symlink', 'claude');
 
             expect(again.status, again.stdout + again.stderr).toBe(0);
+            // The generated files are not what an older symlink install
+            // made, so that folder is replaced as changed content is: under
+            // --yes, without asking.
             expect(again.stdout + again.stderr).toContain(
-                'laid out the way an older LaunchBridge installed them'
+                'laid out the way an older LaunchBridge installed them, so they are installed again: testing-framework'
+            );
+            expect(again.stdout + again.stderr).toContain(
+                'Installed skill content differs from this LaunchBridge source, so these are installed again: lb-setup'
             );
             for (const skill of ['lb-setup', 'testing-framework']) {
                 const dir = path.join(skillsDir(), skill);

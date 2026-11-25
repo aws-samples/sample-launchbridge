@@ -122,6 +122,9 @@ AGENT_GLOBAL_SKILLS_DIRS = {
 MANIFEST_REL_PATH = ".lb_workspace/config/version_manifest.json"
 INSTALL_SOURCE_RECORD = "install_source.json"
 GLOBAL_MANIFEST = "manifest.json"
+# What lb-setup last prepared a repository with from a global install, in the
+# repository's state folder (bootstrap_workspace.py init writes it).
+GLOBAL_SETUP_RECORD = "global_setup.json"
 BASELINE_REL_PATH = ".lb_workspace/config/skill_digests.json"
 AGENTS_REFERENCE_REL_PATH = ".lb_workspace/config/lb_agents_reference.md"
 
@@ -319,6 +322,25 @@ def _inside(path: Path, root: Path) -> bool:
     return any(_same(part, root) for part in [path, *path.parents])
 
 
+def _work_tree(path: Path, clone: str | None) -> str | None:
+    """The git work tree in the LaunchBridge clone that holds `path`: one of its
+    submodules (a folder with its own `.git`), or the clone itself."""
+    if not clone:
+        return None
+    try:
+        top = Path(clone).resolve()
+        current = path.resolve()
+    except (OSError, RuntimeError):
+        return clone
+    if not current.is_relative_to(top):
+        return clone
+    while current != top:
+        if os.path.lexists(current / ".git"):
+            return str(current)
+        current = current.parent
+    return clone
+
+
 def _is_junction(path: Path) -> bool:
     is_junction = getattr(os.path, "isjunction", None)  # Python 3.12+
     return bool(is_junction and is_junction(path))
@@ -422,6 +444,13 @@ def global_generated_dir() -> Path:
     return global_state_dir() / GENERATED_DIR
 
 
+def repo_state_dir(target_repo: Path) -> Path:
+    """The repository's folder in the user's state directory, outside every
+    repository (mirrors repoStateDir in install_script/lib/stateDir.js)."""
+    key = hashlib.sha256(str(target_repo.resolve()).encode("utf-8")).hexdigest()[:16]
+    return state_base() / "launchbridge" / "repos" / key
+
+
 def _read_source_record(record: Path) -> str | None:
     try:
         value = json.loads(record.read_text(encoding="utf-8")).get("sourcePath")
@@ -434,10 +463,21 @@ def install_source(target_repo: Path) -> str | None:
     """The LaunchBridge source the installer recorded for this repository, in
     the user's state directory. The install manifest's own sourcePath is in the
     repository, where a pulled file can replace it, so it isn't used."""
-    key = hashlib.sha256(str(target_repo.resolve()).encode("utf-8")).hexdigest()[:16]
-    return _read_source_record(
-        state_base() / "launchbridge" / "repos" / key / INSTALL_SOURCE_RECORD
-    )
+    return _read_source_record(repo_state_dir(target_repo) / INSTALL_SOURCE_RECORD)
+
+
+def global_setup_record(target_repo: Path) -> dict | None:
+    """What lb-setup last prepared the repository with from the global install,
+    or None when it has not (or the record is unreadable, or resolves inside
+    the repository, where it could have arrived with it)."""
+    path = repo_state_dir(target_repo) / GLOBAL_SETUP_RECORD
+    try:
+        if path.resolve().is_relative_to(target_repo.resolve()):
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RuntimeError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def global_install_source() -> str | None:
@@ -484,7 +524,8 @@ def check_generated_assets(
     """Why the generated folder (default global_generated_dir()) is not
     exactly what the global install wrote, or None when it is: a real folder
     holding the same set of regular files, no links, each with the recorded
-    SHA-256."""
+    SHA-256. A .DS_Store file, which Finder writes into a folder it shows, is
+    not counted (a link of that name is)."""
     if not isinstance(expected, dict) or not expected:
         return (
             "the global install record lists no generated files; run "
@@ -504,6 +545,8 @@ def check_generated_assets(
             if name in files and not path.is_file():
                 return f"{path} is not a regular file"
         for name in files:
+            if name == ".DS_Store":
+                continue
             path = Path(current) / name
             found[path.relative_to(directory).as_posix()] = compute_file_hash(path)
     extra = sorted(set(found) - set(expected))
@@ -640,6 +683,17 @@ def verify(target_repo: Path, scope: str = "local") -> dict:
     checked_dirs = 0
     bytecode = [0]
 
+    def kind(value: str, installed: Path | None = None) -> dict:
+        """In a global check, what a modified entry is, which decides its fix:
+        `link`, a skill folder linked to its folder in the LaunchBridge source
+        (with the git work tree it is in, the clone or a submodule of it);
+        `folder`, any other skill folder; `generated`, the generated files."""
+        if not global_scope:
+            return {}
+        if value == "link" and installed is not None:
+            return {"kind": value, "work_tree": _work_tree(installed, source_root)}
+        return {"kind": value}
+
     def check(
         skills_dir: Path, skills_dir_rel: str, skill_name: str, expected: str
     ) -> None:
@@ -653,6 +707,7 @@ def verify(target_repo: Path, scope: str = "local") -> dict:
                     "location": location,
                     "expected": expected,
                     "actual": "not checked: invalid skill name in the manifest",
+                    **kind("folder"),
                 }
             )
             return
@@ -688,22 +743,36 @@ def verify(target_repo: Path, scope: str = "local") -> dict:
         )
         if stray:
             modified.append(
-                {"location": location, "expected": expected, "actual": stray}
+                {
+                    "location": location,
+                    "expected": expected,
+                    "actual": stray,
+                    **kind("folder"),
+                }
             )
             return
         # A linked skill folder is the LaunchBridge source itself: its bytecode
         # is the user's own and is left there (a .pyc with no source is still
         # reported).
+        linked = installed.is_symlink() or _is_junction(installed)
         sourceless = sourceless_bytecode(installed)
-        if not (installed.is_symlink() or _is_junction(installed)):
+        if not linked:
             bytecode[0] += remove_bytecode(installed)
         if sourceless:
             modified.append(
                 {
                     "location": location,
                     "expected": expected,
-                    "actual": "bytecode with no source (removed, review where it "
-                    "came from): " + ", ".join(sourceless),
+                    "actual": (
+                        "bytecode with no source (left where it is, in the "
+                        "LaunchBridge clone; review where it came from): "
+                        if linked
+                        else "bytecode with no source (removed, review where it "
+                        "came from): "
+                    )
+                    + ", ".join(sourceless),
+                    **(kind("link", installed) if linked else kind("folder")),
+                    **({"sourceless": sourceless} if global_scope and linked else {}),
                 }
             )
             return
@@ -712,7 +781,12 @@ def verify(target_repo: Path, scope: str = "local") -> dict:
             matched.append(location)
         else:
             modified.append(
-                {"location": location, "expected": expected, "actual": actual}
+                {
+                    "location": location,
+                    "expected": expected,
+                    "actual": actual,
+                    **(kind("link", installed) if linked else kind("folder")),
+                }
             )
 
     for agent in agents:
@@ -763,6 +837,7 @@ def verify(target_repo: Path, scope: str = "local") -> dict:
                     "location": str(generated_dir),
                     "expected": "the files the global install generated",
                     "actual": problem,
+                    **kind("generated"),
                 }
             )
 
@@ -770,7 +845,9 @@ def verify(target_repo: Path, scope: str = "local") -> dict:
     # safe to digest. The root AGENTS.md is deliberately NOT checked: the user may
     # legitimately merge their own content into it, which would false-positive.
     # In a global install lb-setup copies it into the repository when it
-    # prepares it, so there is none before the first lb-setup run.
+    # prepares it, so there is none before the first lb-setup run, and an update
+    # of the global install leaves it as it was until lb-setup runs there again:
+    # one that matches what lb-setup last prepared the repository with is stale.
     agents_reference = {"status": "not_recorded"}
     expected_agents_hash = manifest.get("agentsHash")
     reference_path = target_repo / AGENTS_REFERENCE_REL_PATH
@@ -782,12 +859,16 @@ def verify(target_repo: Path, scope: str = "local") -> dict:
             }
         else:
             actual_agents_hash = compute_file_hash(reference_path)
+            if actual_agents_hash == expected_agents_hash:
+                status = "matched"
+            elif global_scope and actual_agents_hash == (
+                global_setup_record(target_repo) or {}
+            ).get("agentsHash"):
+                status = "stale"
+            else:
+                status = "modified"
             agents_reference = {
-                "status": (
-                    "matched"
-                    if actual_agents_hash == expected_agents_hash
-                    else "modified"
-                ),
+                "status": status,
                 "path": AGENTS_REFERENCE_REL_PATH,
                 "expected": expected_agents_hash,
                 "actual": actual_agents_hash,
@@ -802,6 +883,8 @@ def verify(target_repo: Path, scope: str = "local") -> dict:
             else None
         ),
         "baseline_source": baseline_source,
+        # The LaunchBridge clone a global install came from (install_source.json).
+        "install_source": source_root if global_scope else None,
         "manifest_version": manifest.get("version"),
         "manifest_timestamp": manifest.get("timestamp"),
         "install_method": manifest.get("installMethod"),
@@ -820,7 +903,87 @@ def verify(target_repo: Path, scope: str = "local") -> dict:
     }
 
 
-REFERENCE_OK = ("matched", "not_recorded", "not_present")
+REFERENCE_OK = ("matched", "not_recorded", "not_present", "stale")
+
+
+def global_remedies(report: dict) -> list[str]:
+    """What fixes each kind of difference a global check found."""
+    found: dict[str, list[str]] = {}
+    # Links by the git work tree their change is in (None: the clone, or not
+    # known), and those whose only difference is bytecode with no source.
+    linked: dict[str | None, list[str]] = {}
+    bytecode: list[str] = []
+    clone = report.get("install_source")
+    for item in report["modified"]:
+        kind = item.get("kind", "folder")
+        if kind == "link" and item.get("sourceless"):
+            bytecode.append(item["location"])
+            continue
+        found.setdefault(kind, []).append(item["location"])
+        if kind == "link":
+            tree = item.get("work_tree")
+            linked.setdefault(None if tree == clone else tree, []).append(
+                item["location"]
+            )
+    remedies = []
+    if report["missing"]:
+        remedies.append(
+            "Missing skills: run `launchbridge update`, or `launchbridge` again "
+            "and choose Global, to restore them (`launchbridge update` leaves out "
+            "a skill the LaunchBridge clone has changes to that are not committed)."
+        )
+    if not report["skills_dirs_checked"]:
+        remedies.append(
+            "No skills folder: run `launchbridge` again and choose Global to "
+            "install the skills again (`launchbridge update` doesn't make a skills "
+            "folder that is gone)."
+        )
+    if "folder" in found:
+        remedies.append(
+            f"Modified skill folders ({', '.join(found['folder'])}): run "
+            "`launchbridge` again and choose Global to reinstall them; "
+            "`launchbridge update` does not replace a modified copy."
+        )
+    if None in linked:
+        git = f'git -C "{clone}"' if clone else "git -C <your LaunchBridge clone>"
+        remedies.append(
+            f"Modified skill links ({', '.join(linked[None])}): each links into "
+            f"the LaunchBridge clone{f' at {clone}' if clone else ''}, so the "
+            f"change is in that clone. Check it with `{git} status`. Discard "
+            f"changes you didn't make (`{git} checkout -- <paths>`, and remove "
+            "untracked files you didn't add), or, when they are intended, run "
+            "`launchbridge` and choose Global to accept them."
+        )
+    for tree, locations in sorted((t, v) for t, v in linked.items() if t):
+        rel = Path(os.path.relpath(tree, Path(clone).resolve())).as_posix()
+        remedies.append(
+            f"Modified skill links ({', '.join(locations)}): each links into "
+            f"{tree}, a submodule of the LaunchBridge clone, so the change is in "
+            f'that submodule. Check it with `git -C "{tree}" status`. Discard '
+            f'changes you didn\'t make (`git -C "{tree}" checkout -- <paths>`, '
+            "and remove untracked files you didn't add; when the clone's status "
+            f'shows the submodule at a different commit, `git -C "{clone}" '
+            f"submodule update -- {rel}` puts it back), or, when they are "
+            "intended, run `launchbridge` and choose Global to accept them."
+        )
+    if bytecode:
+        remedies.append(
+            f"Bytecode with no source in linked skill folders ({', '.join(bytecode)}): "
+            "the .pyc files listed above are in the LaunchBridge clone, and Python "
+            "would run them with no source to review. Check where they came from, "
+            "then delete them from the clone."
+        )
+    if "generated" in found:
+        remedies.append(
+            "Generated files: run `launchbridge update`, or `launchbridge` again "
+            "and choose Global, to write them again."
+        )
+    if report["agents_reference"]["status"] == "modified":
+        remedies.append(
+            f"{report['agents_reference']['path']}: lb-setup replaces it with the "
+            "global install's copy the next time it runs in this repository."
+        )
+    return remedies
 
 
 def print_report(report: dict) -> None:
@@ -872,6 +1035,12 @@ def print_report(report: dict) -> None:
             f"\nNOTE  {reference['path']} is not in this repository yet; lb-setup "
             "copies it there when it prepares the repository."
         )
+    elif reference["status"] == "stale":
+        print(
+            f"\nNOTE  {reference['path']} is stale: the global install was updated "
+            "since lb-setup last ran in this repository, and lb-setup refreshes it "
+            "the next time it runs here."
+        )
 
     if report["ok"] and reference["status"] in REFERENCE_OK:
         if report.get("unverifiable"):
@@ -889,9 +1058,10 @@ def print_report(report: dict) -> None:
             "\nFAILED — the instructions the agent loads no longer match what was "
             "installed globally. Review the differences before running any skill: "
             "either the skills were changed outside `launchbridge` and `launchbridge "
-            "update`, or the files were edited after install. Run `launchbridge "
-            "update` or `launchbridge` again to reinstall them."
+            "update`, or the files were edited after install."
         )
+        for remedy in global_remedies(report):
+            print(f"  {remedy}")
     else:
         print(
             "\nFAILED — the instructions the agent loads no longer match what was "

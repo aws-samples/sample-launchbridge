@@ -215,18 +215,28 @@ export const externalSkills = {
 
     /**
      * Post-pull update hook for external skills. Reinstalls external skills
-     * whose group content changed and returns refreshed group hashes and
-     * per-agent digests to merge back into the manifest. Self-contained so the
-     * native updater stays unaware of external skills.
+     * whose content changed and returns refreshed group hashes and per-agent
+     * digests to merge back into the manifest: only those of skills brought up
+     * to date, so a failed reinstall or a skill held back keeps its recorded
+     * values. Self-contained so the native updater stays unaware of external
+     * skills.
      *
      * @param {string} sourcePath
      * @param {string} targetRepo - The repository, or for a global install the
      *   home directory
      * @param {object} manifest
      * @param {{ muted: Function, success: Function, warn: Function }} ui
-     * @param {{ scope?: 'local' | 'global' }} [options]
-     * @returns {Promise<{ updated: string[], newHashes: Record<string, string>,
-     *   newFolderHashes: Record<string, string> }>}
+     * @param {{ scope?: 'local' | 'global',
+     *   uncommitted?: (skills: Array<{ name: string, path: string }>) =>
+     *     Promise<Map<string, string[] | null> | null> }} [options] -
+     *   `uncommitted` (global scope): which of the given skills have changes
+     *   the source has not committed, by changed path (null paths: that could
+     *   not be told, already reported); those are held back, and when it
+     *   throws, every one of them is
+     * @returns {Promise<import('./aiSkills.js').AiUpdateResult>} `updated`,
+     *   `newHashes` and `newFolderHashes` as above; `problems` (already
+     *   warned), `heldBack` (not warned) and `modifiedTargets` (folders left as
+     *   they are, already warned)
      */
     update(sourcePath, targetRepo, manifest, ui, options) {
         return ai.updateAiSkills(sourcePath, targetRepo, manifest, ui, options);
