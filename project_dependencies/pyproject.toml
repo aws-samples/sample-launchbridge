@@ -28,7 +28,7 @@ indexing_and_qa = [
     # Pinned to a commit on main (iris publishes no tags). To update it, change the
     # ref to @main, run install_script/freeze_deps.py project_dependencies, review
     # the diff, and commit.
-    "iris @ git+https://github.com/aws-samples/sample-indexed-repository-intelligence-system.git@c2f9b595670db01dd9d4fcb3d774f2dbd784983f",
+    "iris @ git+https://github.com/aws-samples/sample-indexed-repository-intelligence-system.git@f87417185c51bab7c5841652a7a519aa1daa1e91",
     "requests>=2.32.0",
 ]
 

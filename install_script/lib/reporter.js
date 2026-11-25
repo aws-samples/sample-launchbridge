@@ -39,11 +39,68 @@ export function displaySummary(selections) {
             ? 'Local (repository)'
             : 'Global (home directory)'
     );
+    for (const line of describeTargets(selections.targets ?? [])) {
+        kv('Target', line);
+    }
+    if (selections.scope === 'global') {
+        kv(
+            'Repository',
+            'not changed; lb-setup creates .lb_workspace in each repository'
+        );
+    }
     kv('Method', selections.method === 'symlink' ? 'Symlink' : 'Copy');
     kv('Source', selections.sourcePath);
     kv('Skills', selections.skills.join(', '));
 
     return '';
+}
+
+/**
+ * One line per skills directory, naming the agents that use it and, when a
+ * link on the way puts it somewhere else, where it really is.
+ *
+ * @param {Array<{ agent: string, path: string, realPath?: string }>} targets
+ * @returns {string[]}
+ */
+export function describeTargets(targets) {
+    /** @type {Map<string, { agents: string[], realPath?: string }>} */
+    const byPath = new Map();
+    for (const { agent, path: dir, realPath } of targets) {
+        if (!byPath.has(dir)) {
+            byPath.set(dir, { agents: [], realPath });
+        }
+        byPath.get(dir).agents.push(AGENTS[agent]?.displayName ?? agent);
+    }
+    return [...byPath].map(([dir, { agents, realPath }]) => {
+        const where = realPath && realPath !== dir ? ` → ${realPath}` : '';
+        return `${dir}${where} (${agents.join(', ')})`;
+    });
+}
+
+/**
+ * Agents whose older releases don't load a skill folder that is a link
+ * (kirodotdev/Kiro#6401, cline/cline#11113).
+ */
+const SKIP_LINKED_FOLDERS = ['kiro', 'cline'];
+
+/**
+ * The warning for a symlink install for agents whose older releases don't
+ * load a skill folder that is a link, or null when it installs for none.
+ *
+ * @param {'symlink' | 'copy'} method
+ * @param {string[]} agents
+ * @returns {string | null}
+ */
+export function linkedFoldersWarning(method, agents) {
+    if (method !== 'symlink') return null;
+    const names = SKIP_LINKED_FOLDERS.filter((agent) =>
+        agents.includes(agent)
+    ).map((agent) => AGENTS[agent].displayName);
+    if (names.length === 0) return null;
+    return (
+        `Older ${names.join(' and ')} releases don't load skill folders that are links, which is what a symlink install makes. ` +
+        `If the skills don't appear in ${names.join(' or ')}, install again with --method copy.`
+    );
 }
 
 /**
@@ -147,7 +204,7 @@ export function getExitCode(report) {
  * @property {import('./lifecycleOrchestrator.js').LifecycleScenario} scenario
  * @property {string[]} installed - Skills freshly installed (new additions)
  * @property {string[]} updated - Skills overwritten with new content (status reset)
- * @property {string[]} removed - Skills removed as orphans
+ * @property {string[]} removed - Skills removed as orphans, one per folder removed
  * @property {string[]} unchanged - Skills with no changes (skipped)
  * @property {string[]} failed - Skills that failed to install
  * @property {string[]} warnings - Non-fatal warnings
@@ -168,9 +225,25 @@ export function getExitCode(report) {
  * @param {Object[]} results.failed - Skills that failed to install
  * @param {Object[]} results.skipped - Skills that were skipped
  * @param {import('./lifecycleOrchestrator.js').LifecycleDecision} decision - The lifecycle decision
+ * @param {{ scope?: 'local' | 'global', removed?: string[] }} [options] - A
+ *   global install changes no repository, so the decision's setup_status
+ *   resets are not reported for it. `removed`: the skill of each folder the
+ *   run removed (default: the decision's skillsToRemove)
  * @returns {LifecycleReport}
  */
-export function buildLifecycleReport(results, decision) {
+export function buildLifecycleReport(
+    results,
+    decision,
+    { scope = 'local', removed: removedFolders } = {}
+) {
+    if (scope === 'global') {
+        decision = {
+            ...decision,
+            resetVenvSetup: false,
+            resetMcpSetup: false,
+            resetAgentsMerge: false,
+        };
+    }
     const installed = [];
     const updated = [];
     const failed = [];
@@ -190,8 +263,8 @@ export function buildLifecycleReport(results, decision) {
         failed.push(result.skillName);
     }
 
-    // Removed and unchanged come directly from the decision
-    const removed = [...decision.skillsToRemove];
+    // Removed: what the run removed, when it says; unchanged: the decision's
+    const removed = [...(removedFolders ?? decision.skillsToRemove)];
     const unchanged = [...decision.skillsUnchanged];
 
     // Warnings from the decision
@@ -209,7 +282,9 @@ export function buildLifecycleReport(results, decision) {
     const resetReasons = [];
     if (updated.length > 0) {
         resetReasons.push(
-            `${updated.length} skill${updated.length > 1 ? 's' : ''} updated with new content — setup will re-run`
+            scope === 'global'
+                ? `${updated.length} skill${updated.length > 1 ? 's' : ''} updated with new content — each repository picks up the change the next time lb-setup runs there`
+                : `${updated.length} skill${updated.length > 1 ? 's' : ''} updated with new content — setup will re-run`
         );
     }
     if (decision.resetVenvSetup) {
@@ -228,6 +303,7 @@ export function buildLifecycleReport(results, decision) {
 
     return {
         scenario: decision.scenario,
+        scope,
         installed,
         updated,
         removed,
@@ -241,6 +317,13 @@ export function buildLifecycleReport(results, decision) {
     };
 }
 
+/** The next step a lifecycle report ends with. */
+function lbSetupBanner(scope) {
+    return scope === 'global'
+        ? 'Skills installed globally — open your agent in a repository and run the skill "lb-setup" to prepare it'
+        : 'Skills installed — open your agent and run the skill "lb-setup" or ask your agent to start the LaunchBridge skills';
+}
+
 /**
  * Displays the lifecycle report to the user.
  *
@@ -250,6 +333,7 @@ export function buildLifecycleReport(results, decision) {
  * - incremental_update: counts of installed/updated/removed/unchanged + reset reasons
  * - release_upgrade: version header + counts + reset reasons
  * - interrupt_recovery: recovery header + normal counts
+ * - switch_from_global: switch header + counts + reset reasons
  *
  * @param {LifecycleReport} report
  */
@@ -281,9 +365,7 @@ export function displayLifecycleReport(report) {
             _displayFailed(report.failed);
             _displayWarnings(report.warnings);
             if (report.needsLbSetup) {
-                successBanner(
-                    'Skills installed — open your agent and run the skill "lb-setup" or ask your agent to start the LaunchBridge skills'
-                );
+                successBanner(lbSetupBanner(report.scope));
             }
             return;
         }
@@ -304,12 +386,22 @@ export function displayLifecycleReport(report) {
             spacer();
             break;
 
+        case 'switch_from_global':
+            console.log(
+                chalk.bold.cyan(
+                    '  Switching this repository from the global LaunchBridge install to a local one'
+                )
+            );
+            spacer();
+            break;
+
         case 'incremental_update':
         default:
             break;
     }
 
-    // Counts line for incremental_update, release_upgrade, interrupt_recovery
+    // Counts line for incremental_update, release_upgrade, interrupt_recovery,
+    // switch_from_global
     const parts = [];
     if (report.installed.length > 0) {
         parts.push(chalk.green(`${report.installed.length} installed`));
@@ -347,9 +439,7 @@ export function displayLifecycleReport(report) {
 
     // Next-step guidance
     if (report.needsLbSetup) {
-        successBanner(
-            'Skills installed — open your agent and run the skill "lb-setup" or ask your agent to start the LaunchBridge skills'
-        );
+        successBanner(lbSetupBanner(report.scope));
     }
 
     divider();

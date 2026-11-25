@@ -4,10 +4,12 @@
  * Unit tests for Path Validator Module
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import path from 'path';
 import os from 'os';
-import { getTargetPath } from '../../lib/pathValidator.js';
+import fsSync from 'fs';
+import { getTargetPath, globalSkillsDir } from '../../lib/pathValidator.js';
+import { AGENTS } from '../../lib/agentConfig.js';
 
 describe('getTargetPath', () => {
     describe('local scope', () => {
@@ -59,6 +61,117 @@ describe('getTargetPath', () => {
             const result1 = getTargetPath('kiro', 'global', '/path/one');
             const result2 = getTargetPath('kiro', 'global', '/path/two');
             expect(result1).toBe(result2);
+        });
+
+        it('should not need a target repository for global scope', () => {
+            expect(getTargetPath('kiro', 'global')).toBe(
+                path.join(os.homedir(), '.kiro', 'skills')
+            );
+        });
+    });
+
+    describe('global scope with a temporary home directory', () => {
+        let home;
+        let savedHome;
+        let savedProfile;
+
+        beforeEach(() => {
+            home = fsSync.mkdtempSync(path.join(os.tmpdir(), 'lb-home-'));
+            savedHome = process.env.HOME;
+            savedProfile = process.env.USERPROFILE;
+            process.env.HOME = home;
+            process.env.USERPROFILE = home;
+        });
+
+        afterEach(() => {
+            for (const [key, value] of [
+                ['HOME', savedHome],
+                ['USERPROFILE', savedProfile],
+            ]) {
+                if (value === undefined) delete process.env[key];
+                else process.env[key] = value;
+            }
+            fsSync.rmSync(home, { recursive: true, force: true });
+        });
+
+        it('resolves every agent under the home directory', () => {
+            expect(os.homedir()).toBe(home);
+            for (const name of Object.keys(AGENTS)) {
+                const dir = getTargetPath(name, 'global');
+                expect(path.relative(home, dir).startsWith('..')).toBe(false);
+                expect(dir).toBe(
+                    path.join(home, ...AGENTS[name].globalSkillsDir.split('/'))
+                );
+            }
+        });
+
+        it('returns $HOME/.agents/skills for Codex', () => {
+            expect(getTargetPath('codex', 'global')).toBe(
+                path.join(home, '.agents', 'skills')
+            );
+        });
+
+        it('leaves every local path unchanged', () => {
+            const repo = path.join(home, 'project');
+            for (const name of Object.keys(AGENTS)) {
+                expect(getTargetPath(name, 'local', repo)).toBe(
+                    path.join(repo, ...AGENTS[name].skillsDir.split('/'))
+                );
+            }
+            expect(getTargetPath('codex', 'local', repo)).toBe(
+                path.join(repo, '.codex', 'skills')
+            );
+        });
+    });
+
+    describe('global scope on Windows paths', () => {
+        const home = 'C:\\Users\\dev';
+        const win = { home, pathApi: path.win32 };
+
+        it('joins with backslashes under %USERPROFILE%', () => {
+            expect(globalSkillsDir('kiro', win)).toBe(
+                'C:\\Users\\dev\\.kiro\\skills'
+            );
+            expect(globalSkillsDir('claude', win)).toBe(
+                'C:\\Users\\dev\\.claude\\skills'
+            );
+            expect(globalSkillsDir('roo', win)).toBe(
+                'C:\\Users\\dev\\.roo\\skills'
+            );
+        });
+
+        it('puts Codex, pi and other agents in the shared .agents\\skills', () => {
+            for (const name of ['codex', 'pi', 'other']) {
+                expect(globalSkillsDir(name, win)).toBe(
+                    'C:\\Users\\dev\\.agents\\skills'
+                );
+            }
+        });
+
+        it('handles a home directory on another drive or a UNC share', () => {
+            expect(
+                globalSkillsDir('cline', {
+                    home: 'D:\\home',
+                    pathApi: path.win32,
+                })
+            ).toBe('D:\\home\\.cline\\skills');
+            expect(
+                globalSkillsDir('kiro', {
+                    home: '\\\\server\\share\\dev',
+                    pathApi: path.win32,
+                })
+            ).toBe('\\\\server\\share\\dev\\.kiro\\skills');
+        });
+    });
+
+    describe('unknown agents', () => {
+        it('throws for both scopes', () => {
+            expect(() => getTargetPath('cursor', 'global')).toThrow(
+                /Unknown agent/
+            );
+            expect(() => getTargetPath('cursor', 'local', '/repo')).toThrow(
+                /Unknown agent/
+            );
         });
     });
 

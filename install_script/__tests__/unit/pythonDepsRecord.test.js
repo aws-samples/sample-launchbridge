@@ -27,14 +27,15 @@ const CHECK = path.join(
     'scripts',
     'venv_identity.py'
 );
-const hasPython = spawnSync('python3', ['--version']).status === 0;
+const PYTHON = process.env.LB_TEST_PYTHON;
+const hasPython = Boolean(PYTHON);
 
 describe('python_deps record', () => {
     let repo;
     const deps = () =>
         path.join(repo, '.lb_workspace', 'config', 'python_deps');
     const check = () =>
-        spawnSync('python3', ['-I', CHECK, 'deps', repo], {
+        spawnSync(PYTHON, ['-I', CHECK, 'deps', repo], {
             encoding: 'utf-8',
         });
 

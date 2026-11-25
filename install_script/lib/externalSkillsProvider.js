@@ -100,10 +100,38 @@ export const externalSkills = {
      * @param {string} agent - Agent name
      * @param {string} targetDir - The installed skill directory
      * @param {string[]} agents - Every selected agent
+     * @param {'local' | 'global'} [scope] - The install scope (default `local`)
      * @returns {Promise<void>}
      */
-    adaptForAgent(skill, agent, targetDir, agents) {
-        return ai.writeAgentFiles(skill, agent, targetDir, agents);
+    adaptForAgent(skill, agent, targetDir, agents, scope = 'local') {
+        return ai.writeAgentFiles(skill, agent, targetDir, agents, scope);
+    },
+
+    /**
+     * The files `adaptForAgent` writes into that agent's copy, by relative
+     * path, or undefined when the agent gets the source files unchanged. A
+     * re-run compares an installed copy against the source with these.
+     *
+     * @param {ExternalSkill} skill
+     * @param {string} agent
+     * @param {string[]} agents - Every selected agent
+     * @param {'local' | 'global'} [scope]
+     * @returns {Map<string, Buffer> | undefined}
+     */
+    agentFiles(skill, agent, agents, scope = 'local') {
+        return ai.agentFilesFor(skill, agent, agents, scope);
+    },
+
+    /**
+     * Skills directories several selected agents share, each holding one
+     * agent's copy of the external skills.
+     *
+     * @param {string[]} agents
+     * @param {'local' | 'global'} [scope]
+     * @returns {Array<{ dir: string, owner: string, others: string[] }>}
+     */
+    sharedDirectories(agents, scope = 'local') {
+        return ai.sharedSkillsDirectories(agents, scope);
     },
 
     /**
@@ -154,7 +182,9 @@ export const externalSkills = {
      * @param {string[]} selectedSkills
      * @param {ExternalSkill[]} skills
      * @param {string[]} agents - Agent names the skills are installed for
-     * @param {{ allowedRoot?: string }} [options] - Passed to the content hash
+     * @param {{ allowedRoot?: string, scope?: 'local' | 'global' }} [options]
+     *   `allowedRoot` is passed to the content hash; `scope` decides which
+     *   agents share a skills directory
      * @returns {Promise<Record<string, string>>}
      */
     computeFolderHashes(selectedSkills, skills, agents, options) {
@@ -185,18 +215,30 @@ export const externalSkills = {
 
     /**
      * Post-pull update hook for external skills. Reinstalls external skills
-     * whose group content changed and returns refreshed group hashes and
-     * per-agent digests to merge back into the manifest. Self-contained so the
-     * native updater stays unaware of external skills.
+     * whose content changed and returns refreshed group hashes and per-agent
+     * digests to merge back into the manifest: only those of skills brought up
+     * to date, so a failed reinstall or a skill held back keeps its recorded
+     * values. Self-contained so the native updater stays unaware of external
+     * skills.
      *
      * @param {string} sourcePath
-     * @param {string} targetRepo
+     * @param {string} targetRepo - The repository, or for a global install the
+     *   home directory
      * @param {object} manifest
      * @param {{ muted: Function, success: Function, warn: Function }} ui
-     * @returns {Promise<{ updated: string[], newHashes: Record<string, string>,
-     *   newFolderHashes: Record<string, string> }>}
+     * @param {{ scope?: 'local' | 'global',
+     *   uncommitted?: (skills: Array<{ name: string, path: string }>) =>
+     *     Promise<Map<string, string[] | null> | null> }} [options] -
+     *   `uncommitted` (global scope): which of the given skills have changes
+     *   the source has not committed, by changed path (null paths: that could
+     *   not be told, already reported); those are held back, and when it
+     *   throws, every one of them is
+     * @returns {Promise<import('./aiSkills.js').AiUpdateResult>} `updated`,
+     *   `newHashes` and `newFolderHashes` as above; `problems` (already
+     *   warned), `heldBack` (not warned) and `modifiedTargets` (folders left as
+     *   they are, already warned)
      */
-    update(sourcePath, targetRepo, manifest, ui) {
-        return ai.updateAiSkills(sourcePath, targetRepo, manifest, ui);
+    update(sourcePath, targetRepo, manifest, ui, options) {
+        return ai.updateAiSkills(sourcePath, targetRepo, manifest, ui, options);
     },
 };

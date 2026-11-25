@@ -729,6 +729,11 @@ def import_findings(
     files mean a pulled commit added them to a local install: that is refused.
     A team that commits its skills folders tracks SKILL.md too, so there, and in
     a folder that isn't a skill's, the files are reported for review instead.
+
+    A global install's skill folders are in the user's home folder, outside the
+    repository, so nothing here looks at them: no commit to the repository can
+    change them. verify_integrity.py --global checks them against the global
+    install record instead.
     """
     repo = Path(repo).resolve()
     folders = []
@@ -968,8 +973,9 @@ def main(argv: list[str]) -> int:
             print(f"  - {reason}", file=sys.stderr)
         in_skills = any("/skills/" in reason.replace("\\", "/") for reason in found)
         advice = (
-            "keep the skills folders out of git (git rm --cached) and re-run the "
-            "LaunchBridge installer"
+            "keep the repository's skills folders out of git (git rm --cached) and "
+            "re-run the LaunchBridge installer, or install the skills globally "
+            "(`launchbridge`, Global), where no pull can change them"
             if in_skills
             else "remove that folder from PYTHONPATH"
         )

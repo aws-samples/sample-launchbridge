@@ -36,7 +36,7 @@ python3 -I "<skills folder>/lb-setup/scripts/lb_guard.py" check "<project root>"
 
 Then start `.venv_lb`'s Python only through the guard's `exec`: `python3 -I "<skills folder>/lb-setup/scripts/lb_guard.py" exec "<project root>" -- ARGS` checks the venv again and runs `.venv_lb`'s Python with `ARGS`, with its bytecode cache outside the repository; it runs nothing if a check fails. Never run `.venv_lb/bin/python` (Windows: `.venv_lb\Scripts\python`) directly: it would load bytecode from `.venv_lb`, which the seal does not cover. If it prints `LaunchBridge warning: this Python may import files that came with the repository`, stop before relying on the result and show the user the warning: the files it lists are tracked by git where the skill's Python imports from, so a pull could have changed them. Continue only once the user has reviewed them.
 
-`<skills folder>` is the folder this skill is installed in, one level up (for example `.claude/skills`); on Windows use `py -3 -I`. A `.venv_lb` that arrived with the repository, or that a `git pull` or an unpacked archive added a file to, would run that code with the user's AWS credentials. Never install anything into `.venv_lb`.
+`<skills folder>` is the folder this skill is installed in, one level up (for example `.claude/skills` in the repository, or `~/.claude/skills` for a global install); on Windows use `py -3 -I`. A `.venv_lb` that arrived with the repository, or that a `git pull` or an unpacked archive added a file to, would run that code with the user's AWS credentials. Never install anything into `.venv_lb`.
 
 ## CRITICAL: Measure Bedrock Costs and Latency, Don't Guess
 
@@ -593,7 +593,7 @@ All comparison CSVs go in the current run's timestamped folder alongside the sta
 
 ## References
 
-- `references/bedrock-pricing.md` — Bedrock pricing tables for common Claude and Nova models, plus a Python pricing dict. Use this as the primary source for Bedrock cost calculations. If a model is missing, ask the user to look it up at the official pricing page and provide the rates, then add them to this file for future use.
+- `references/bedrock-pricing.md` — Bedrock pricing tables for common Claude and Nova models, plus a Python pricing dict. Use this as the primary source for Bedrock cost calculations. If a model is missing, ask the user to look it up at the official pricing page and provide the rates, then append them to `.lb_workspace/operational_metrics/bedrock-pricing-overrides.md` for future use (see Phase 4). Never edit this file or any of the skill's other files.
 - `generate-predictions` skill — Handles the full execution lifecycle: finding/creating inference scripts, setting up venvs, resolving credentials, confirming parameters with the user, and running predictions. When invoked by this skill, it automatically sets `ENABLE_METRICS_LOGGING=true`.
 - `references/dashboard-generation.md` — Dashboard generation workflow: data discovery, panel selection, script generation, and output. Used by Phase 7.
 - `references/dashboard_template.py` — Starter Python script for dashboard generation. Adapted based on discovered data.

@@ -16,6 +16,7 @@ import {
     targetKey,
     readInstalledTargets,
     namesUnder,
+    recordedOrphans,
 } from '../../lib/installedTargets.js';
 import { runPostPullSync } from '../../lib/updater.js';
 import { updateAiSkills } from '../../lib/aiSkills.js';
@@ -71,6 +72,82 @@ describe('installedTargets helpers', () => {
             ),
         ]).toEqual(['a', 'b']);
     });
+
+    describe('recordedOrphans', () => {
+        let repo;
+        let base;
+        beforeEach(() => {
+            repo = fs.realpathSync(
+                fs.mkdtempSync(path.join(os.tmpdir(), 'lb-orphans-'))
+            );
+            base = path.join(repo, '.claude', 'skills');
+        });
+        afterEach(() => {
+            fs.rmSync(repo, { recursive: true, force: true });
+        });
+
+        it.skipIf(process.platform === 'win32')(
+            'lists the recorded folders of skills not selected that are still there',
+            async () => {
+                for (const name of ['kept', 'selected', 'mine']) {
+                    fs.mkdirSync(path.join(base, name), { recursive: true });
+                }
+                fs.symlinkSync(
+                    path.join(repo, 'elsewhere'),
+                    path.join(base, 'linked')
+                );
+                fs.writeFileSync(path.join(base, 'file'), 'not a skill\n');
+                const installed = new Set([
+                    '.claude/skills/kept',
+                    '.claude/skills/selected',
+                    '.claude/skills/linked',
+                    '.claude/skills/file',
+                    '.claude/skills/removed',
+                    '.claude/skills/..',
+                    '.kiro/skills/other',
+                ]);
+
+                expect(
+                    await recordedOrphans(installed, repo, base, ['selected'])
+                ).toEqual(['kept', 'linked']);
+            }
+        );
+
+        it('lists none when the skills folder is gone', async () => {
+            expect(
+                await recordedOrphans(
+                    new Set(['.claude/skills/kept']),
+                    repo,
+                    base,
+                    []
+                )
+            ).toEqual([]);
+        });
+
+        it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+            'keeps every recorded name when the skills folder cannot be read',
+            async () => {
+                fs.mkdirSync(path.join(base, 'kept'), { recursive: true });
+                fs.chmodSync(base, 0o000);
+                try {
+                    expect(
+                        await recordedOrphans(
+                            new Set([
+                                '.claude/skills/kept',
+                                '.claude/skills/gone',
+                                '.claude/skills/..',
+                            ]),
+                            repo,
+                            base,
+                            []
+                        )
+                    ).toEqual(['gone', 'kept']);
+                } finally {
+                    fs.chmodSync(base, 0o755);
+                }
+            }
+        );
+    });
 });
 
 const hasGit = spawnSync('git', ['--version']).status === 0;
@@ -102,7 +179,15 @@ describe.skipIf(!hasGit || process.platform === 'win32')(
         const install = (...args) =>
             spawnSync(
                 process.execPath,
-                [INSTALLER, '--yes', '--agent', 'claude', ...args],
+                [
+                    INSTALLER,
+                    '--yes',
+                    '--scope',
+                    'local',
+                    '--agent',
+                    'claude',
+                    ...args,
+                ],
                 { cwd: target, encoding: 'utf-8' }
             );
 
@@ -225,6 +310,56 @@ describe.skipIf(process.platform === 'win32')(
             expect(
                 fs.existsSync(
                     path.join(skillDir('code-guardrails'), 'SKILL.md')
+                )
+            ).toBe(true);
+        });
+
+        it('links a recorded per-file symlink install to its folder, and leaves an unrecorded one', async () => {
+            // What an older symlink install made: a real folder of links.
+            for (const name of ['code-guardrails', 'testing-framework']) {
+                fs.mkdirSync(skillDir(name), { recursive: true });
+                fs.symlinkSync(
+                    path.join(REPO_ROOT, 'skills', name, 'SKILL.md'),
+                    path.join(skillDir(name), 'SKILL.md')
+                );
+            }
+            writeManifest({
+                installMethod: 'symlink',
+                skills: ['testing-framework', 'code-guardrails'],
+                skillHashes: {
+                    'testing-framework': 'stale',
+                    'code-guardrails': 'stale',
+                },
+                installedTargets: ['.claude/skills/code-guardrails'],
+            });
+
+            await runPostPullSync(REPO_ROOT, repo, quietUi());
+
+            const linked = skillDir('code-guardrails');
+            expect(fs.lstatSync(linked).isSymbolicLink()).toBe(true);
+            expect(fs.realpathSync(linked)).toBe(
+                fs.realpathSync(
+                    path.join(REPO_ROOT, 'skills', 'code-guardrails')
+                )
+            );
+            expect(
+                fs.lstatSync(skillDir('testing-framework')).isSymbolicLink()
+            ).toBe(false);
+            expect(
+                fs
+                    .lstatSync(
+                        path.join(skillDir('testing-framework'), 'SKILL.md')
+                    )
+                    .isSymbolicLink()
+            ).toBe(true);
+            expect(
+                fs.existsSync(
+                    path.join(
+                        REPO_ROOT,
+                        'skills',
+                        'code-guardrails',
+                        'SKILL.md'
+                    )
                 )
             ).toBe(true);
         });

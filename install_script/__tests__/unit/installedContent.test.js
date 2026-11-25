@@ -12,7 +12,11 @@ import path from 'path';
 import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
-import { installedSkillMatches } from '../../lib/installedContent.js';
+import {
+    entriesNotInstalled,
+    installedLayout,
+    installedSkillMatches,
+} from '../../lib/installedContent.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const INSTALLER = path.resolve(HERE, '..', '..', 'index.js');
@@ -31,7 +35,7 @@ describe('installedSkillMatches', () => {
     });
     afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
-    /** A symlink install: real directories, one link per source file. */
+    /** An older symlink install: real directories, one link per source file. */
     function linkInstall(dest) {
         fs.mkdirSync(path.join(dest, 'scripts'), { recursive: true });
         fs.symlinkSync(
@@ -206,6 +210,252 @@ describe('installedSkillMatches', () => {
         ).toBe(false);
         expect(await installedSkillMatches(source, undefined)).toBe(false);
     });
+
+    it('accepts files the installer wrote for the agent, byte for byte', async () => {
+        const copy = path.join(root, 'copy');
+        fs.cpSync(source, copy, { recursive: true });
+        const own = new Map([
+            ['SKILL.md', Buffer.from('# for Kiro\n')],
+            ['agents/openai.yaml', Buffer.from('policy: {}\n')],
+        ]);
+        fs.writeFileSync(path.join(copy, 'SKILL.md'), '# for Kiro\n');
+        fs.mkdirSync(path.join(copy, 'agents'));
+        fs.writeFileSync(
+            path.join(copy, 'agents', 'openai.yaml'),
+            'policy: {}\n'
+        );
+        expect(
+            await installedSkillMatches(copy, source, source, {
+                overrides: own,
+            })
+        ).toBe(true);
+
+        fs.writeFileSync(path.join(copy, 'agents', 'openai.yaml'), 'x\n');
+        expect(
+            await installedSkillMatches(copy, source, source, {
+                overrides: own,
+            })
+        ).toBe(false);
+    });
+
+    it('refuses an agent file that is a link, even to the right bytes', async () => {
+        const dest = linkInstall(path.join(root, 'linked'));
+        const own = new Map([
+            ['SKILL.md', fs.readFileSync(path.join(source, 'SKILL.md'))],
+        ]);
+        expect(
+            await installedSkillMatches(dest, source, source, {
+                overrides: own,
+            })
+        ).toBe(false);
+    });
+
+    it('counts a folder of generated files a global install once wrote into lb-setup as a difference', async () => {
+        const copy = path.join(root, 'copy');
+        fs.cpSync(source, copy, { recursive: true });
+        fs.mkdirSync(path.join(copy, 'assets', 'generated'), {
+            recursive: true,
+        });
+        fs.writeFileSync(
+            path.join(copy, 'assets', 'generated', 'setup_status.md'),
+            'x\n'
+        );
+        expect(await installedSkillMatches(copy, source)).toBe(false);
+    });
+
+    it('with a layout, refuses a folder laid out the other way', async () => {
+        const link = path.join(root, 'link');
+        fs.symlinkSync(source, link, 'dir');
+        const copy = path.join(root, 'copy');
+        fs.cpSync(source, copy, { recursive: true });
+        const perFile = linkInstall(path.join(root, 'per-file'));
+
+        expect(
+            await installedSkillMatches(link, source, source, {
+                layout: 'link',
+            })
+        ).toBe(true);
+        expect(
+            await installedSkillMatches(copy, source, source, {
+                layout: 'link',
+            })
+        ).toBe(false);
+        expect(
+            await installedSkillMatches(perFile, source, source, {
+                layout: 'link',
+            })
+        ).toBe(false);
+
+        expect(
+            await installedSkillMatches(copy, source, source, {
+                layout: 'copy',
+            })
+        ).toBe(true);
+        expect(
+            await installedSkillMatches(link, source, source, {
+                layout: 'copy',
+            })
+        ).toBe(false);
+        expect(
+            await installedSkillMatches(perFile, source, source, {
+                layout: 'copy',
+            })
+        ).toBe(false);
+    });
+
+    it('never changes the source through a linked folder', async () => {
+        fs.mkdirSync(path.join(source, 'scripts', '__pycache__'));
+        fs.writeFileSync(
+            path.join(source, 'scripts', '__pycache__', 'a.cpython-312.pyc'),
+            'bytecode'
+        );
+        const link = path.join(root, 'link');
+        fs.symlinkSync(source, link, 'dir');
+
+        expect(await installedSkillMatches(link, source)).toBe(true);
+        expect(
+            fs.existsSync(
+                path.join(source, 'scripts', '__pycache__', 'a.cpython-312.pyc')
+            )
+        ).toBe(true);
+    });
+});
+
+describe('installedLayout', () => {
+    let root;
+    beforeEach(() => {
+        root = fs.realpathSync(
+            fs.mkdtempSync(path.join(os.tmpdir(), 'lb-layout-'))
+        );
+    });
+    afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+
+    it('tells a link, a copy, per-file links, a file and nothing apart', async () => {
+        const source = path.join(root, 'source');
+        fs.mkdirSync(path.join(source, 'scripts'), { recursive: true });
+        fs.writeFileSync(path.join(source, 'SKILL.md'), '# skill\n');
+        fs.writeFileSync(path.join(source, 'scripts', 'a.py'), 'print(1)\n');
+
+        const link = path.join(root, 'link');
+        fs.symlinkSync(source, link, 'dir');
+        const copy = path.join(root, 'copy');
+        fs.cpSync(source, copy, { recursive: true });
+        const perFile = path.join(root, 'per-file');
+        fs.mkdirSync(path.join(perFile, 'scripts'), { recursive: true });
+        fs.writeFileSync(path.join(perFile, 'SKILL.md'), '# skill\n');
+        fs.symlinkSync(
+            path.join(source, 'scripts', 'a.py'),
+            path.join(perFile, 'scripts', 'a.py')
+        );
+        const file = path.join(root, 'file');
+        fs.writeFileSync(file, 'x');
+
+        expect(await installedLayout(link)).toBe('link');
+        expect(await installedLayout(copy)).toBe('copy');
+        expect(await installedLayout(perFile)).toBe('per-file');
+        expect(await installedLayout(file)).toBe('other');
+        expect(await installedLayout(path.join(root, 'none'))).toBeNull();
+    });
+});
+
+describe.skipIf(process.platform === 'win32')('entriesNotInstalled', () => {
+    let root;
+    let source;
+    let skill;
+    beforeEach(() => {
+        root = fs.realpathSync(
+            fs.mkdtempSync(path.join(os.tmpdir(), 'lb-perfile-'))
+        );
+        source = path.join(root, 'launchbridge');
+        skill = path.join(source, 'skills', 'demo');
+        fs.mkdirSync(path.join(skill, 'scripts'), { recursive: true });
+        fs.writeFileSync(path.join(skill, 'SKILL.md'), '# demo\n');
+        fs.writeFileSync(path.join(skill, 'scripts', 'a.py'), 'print(1)\n');
+    });
+    afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+
+    /** What LaunchBridge 1.2.0 installed: real folders, one link per file. */
+    function perFileInstall() {
+        const dest = path.join(root, 'installed', 'demo');
+        fs.mkdirSync(path.join(dest, 'scripts'), { recursive: true });
+        fs.symlinkSync(
+            path.join(skill, 'SKILL.md'),
+            path.join(dest, 'SKILL.md')
+        );
+        fs.symlinkSync(
+            path.join(skill, 'scripts', 'a.py'),
+            path.join(dest, 'scripts', 'a.py')
+        );
+        return dest;
+    }
+
+    it('lists nothing in a folder that holds only what LaunchBridge put there', async () => {
+        const dest = perFileInstall();
+        fs.mkdirSync(path.join(dest, 'scripts', '__pycache__'));
+        fs.writeFileSync(
+            path.join(dest, 'scripts', '__pycache__', 'a.cpython-312.pyc'),
+            'x'
+        );
+        fs.writeFileSync(path.join(dest, 'scripts', 'b.PYC'), 'x');
+        fs.writeFileSync(path.join(dest, '.DS_Store'), 'x');
+        // A link to a file the skill no longer has.
+        fs.symlinkSync(path.join(skill, 'gone.md'), path.join(dest, 'gone.md'));
+
+        expect(await entriesNotInstalled(dest, source)).toEqual([]);
+    });
+
+    it('lists the user’s own files and links that lead outside the source, without following them', async () => {
+        const dest = perFileInstall();
+        const mine = path.join(dest, 'assets', 'best_practices', 'client.md');
+        fs.mkdirSync(path.dirname(mine), { recursive: true });
+        fs.writeFileSync(mine, 'my standards\n');
+        const elsewhere = path.join(root, 'elsewhere');
+        fs.mkdirSync(elsewhere);
+        fs.writeFileSync(path.join(elsewhere, 'x.md'), 'x\n');
+        fs.symlinkSync(elsewhere, path.join(dest, 'linked'));
+        fs.symlinkSync(
+            path.join(root, 'missing.md'),
+            path.join(dest, 'dangling.md')
+        );
+
+        expect(await entriesNotInstalled(dest, source)).toEqual([
+            'assets/best_practices/client.md',
+            'dangling.md',
+            'linked',
+        ]);
+    });
+
+    it('accepts the files the installer writes for the agent, at their paths only, whatever their bytes', async () => {
+        const dest = perFileInstall();
+        fs.unlinkSync(path.join(dest, 'SKILL.md'));
+        fs.writeFileSync(
+            path.join(dest, 'SKILL.md'),
+            '# adapted, then edited\n'
+        );
+
+        expect(await entriesNotInstalled(dest, source)).toEqual(['SKILL.md']);
+        expect(
+            await entriesNotInstalled(dest, source, { ownFiles: ['SKILL.md'] })
+        ).toEqual([]);
+
+        fs.writeFileSync(path.join(dest, 'scripts', 'SKILL.md'), 'x\n');
+        expect(
+            await entriesNotInstalled(dest, source, { ownFiles: ['SKILL.md'] })
+        ).toEqual(['scripts/SKILL.md']);
+    });
+
+    it('refuses a link or a file in place of the folder', async () => {
+        const link = path.join(root, 'link');
+        fs.symlinkSync(skill, link, 'dir');
+        await expect(entriesNotInstalled(link, source)).rejects.toThrow(
+            /is not a folder/
+        );
+        const file = path.join(root, 'file');
+        fs.writeFileSync(file, 'x');
+        await expect(entriesNotInstalled(file, source)).rejects.toThrow(
+            /is not a folder/
+        );
+    });
 });
 
 const hasGit = spawnSync('git', ['--version']).status === 0;
@@ -228,6 +478,8 @@ describe.skipIf(!hasGit || process.platform === 'win32')(
                 [
                     INSTALLER,
                     '--yes',
+                    '--scope',
+                    'local',
                     '--agent',
                     'claude',
                     '--method',

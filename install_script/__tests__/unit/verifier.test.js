@@ -194,105 +194,85 @@ describe('verifySymlink', () => {
     });
 
     describe('valid symlink installations', () => {
-        it('should return true for a directory with symlinked SKILL.md', () => {
-            const sourceDir = path.join(tempDir, 'source');
-            const targetDir = path.join(tempDir, 'target');
-
-            fs.mkdirSync(sourceDir);
-            fs.writeFileSync(path.join(sourceDir, 'SKILL.md'), '# Test Skill');
-
-            fs.mkdirSync(targetDir);
-            fs.symlinkSync(
-                path.join(sourceDir, 'SKILL.md'),
-                path.join(targetDir, 'SKILL.md')
-            );
-
-            expect(verifySymlink(targetDir)).toBe(true);
-        });
-
-        it('should return true for a directory with multiple symlinked files', () => {
+        it('should return true for a link to a folder with a regular SKILL.md', () => {
             const sourceDir = path.join(tempDir, 'source');
             const targetDir = path.join(tempDir, 'target');
 
             fs.mkdirSync(sourceDir);
             fs.writeFileSync(path.join(sourceDir, 'SKILL.md'), '# Test Skill');
             fs.writeFileSync(path.join(sourceDir, 'README.md'), '# Readme');
-
-            fs.mkdirSync(targetDir);
-            fs.symlinkSync(
-                path.join(sourceDir, 'SKILL.md'),
-                path.join(targetDir, 'SKILL.md')
-            );
-            fs.symlinkSync(
-                path.join(sourceDir, 'README.md'),
-                path.join(targetDir, 'README.md')
-            );
-
-            expect(verifySymlink(targetDir)).toBe(true);
-        });
-
-        it('should return true for a regular SKILL.md beside symlinked files (an AI skill adapted for the agent)', () => {
-            const sourceDir = path.join(tempDir, 'source');
-            const targetDir = path.join(tempDir, 'target');
-
-            fs.mkdirSync(sourceDir);
-            fs.writeFileSync(path.join(sourceDir, 'README.md'), '# Readme');
-
-            fs.mkdirSync(targetDir);
-            fs.writeFileSync(path.join(targetDir, 'SKILL.md'), '# Test Skill');
-            fs.symlinkSync(
-                path.join(sourceDir, 'README.md'),
-                path.join(targetDir, 'README.md')
-            );
+            fs.symlinkSync(sourceDir, targetDir, 'dir');
 
             expect(verifySymlink(targetDir)).toBe(true);
         });
     });
 
     describe('invalid symlink installations', () => {
-        it('should return false for a directory without SKILL.md', () => {
+        it('should return false for a real folder, which an older install made of per-file links', () => {
+            const sourceDir = path.join(tempDir, 'source');
             const targetDir = path.join(tempDir, 'target');
-            fs.mkdirSync(targetDir);
 
-            expect(verifySymlink(targetDir)).toBe(false);
-        });
-
-        it('should return false for a directory whose SKILL.md is a directory', () => {
-            const targetDir = path.join(tempDir, 'target');
-            fs.mkdirSync(path.join(targetDir, 'SKILL.md'), { recursive: true });
-
-            expect(verifySymlink(targetDir)).toBe(false);
-        });
-
-        it('should return false for a directory with broken SKILL.md symlink', () => {
-            const targetDir = path.join(tempDir, 'target');
+            fs.mkdirSync(sourceDir);
+            fs.writeFileSync(path.join(sourceDir, 'SKILL.md'), '# Test Skill');
             fs.mkdirSync(targetDir);
             fs.symlinkSync(
-                path.join(tempDir, 'non-existent', 'SKILL.md'),
+                path.join(sourceDir, 'SKILL.md'),
                 path.join(targetDir, 'SKILL.md')
             );
 
             expect(verifySymlink(targetDir)).toBe(false);
         });
 
-        it('should return false for a regular file (not a directory)', () => {
-            const filePath = path.join(tempDir, 'regular-file.txt');
-            fs.writeFileSync(filePath, 'test content');
-
-            expect(verifySymlink(filePath)).toBe(false);
-        });
-
-        it('should return false for a symlinked directory (old approach)', () => {
+        it('should return false for a linked folder whose SKILL.md is itself a link (Codex skips it)', () => {
             const sourceDir = path.join(tempDir, 'source');
-            const symlinkPath = path.join(tempDir, 'link');
+            const elsewhere = path.join(tempDir, 'elsewhere.md');
+            const targetDir = path.join(tempDir, 'target');
 
             fs.mkdirSync(sourceDir);
-            fs.writeFileSync(path.join(sourceDir, 'SKILL.md'), '# Test');
-            fs.symlinkSync(sourceDir, symlinkPath);
+            fs.writeFileSync(elsewhere, '# Test Skill');
+            fs.symlinkSync(elsewhere, path.join(sourceDir, 'SKILL.md'));
+            fs.symlinkSync(sourceDir, targetDir, 'dir');
 
-            // Old approach: directory symlink should now fail
-            // because we expect a real directory with symlinked files
-            expect(verifySymlink(symlinkPath)).toBe(false);
+            expect(verifySymlink(targetDir)).toBe(false);
+        });
+
+        it('should return false for a linked folder without SKILL.md', () => {
+            const sourceDir = path.join(tempDir, 'source');
+            const targetDir = path.join(tempDir, 'target');
+            fs.mkdirSync(sourceDir);
+            fs.symlinkSync(sourceDir, targetDir, 'dir');
+
+            expect(verifySymlink(targetDir)).toBe(false);
+        });
+
+        it('should return false for a linked folder whose SKILL.md is a directory', () => {
+            const sourceDir = path.join(tempDir, 'source');
+            const targetDir = path.join(tempDir, 'target');
+            fs.mkdirSync(path.join(sourceDir, 'SKILL.md'), { recursive: true });
+            fs.symlinkSync(sourceDir, targetDir, 'dir');
+
+            expect(verifySymlink(targetDir)).toBe(false);
+        });
+
+        it('should return false for a link that does not resolve', () => {
+            const targetDir = path.join(tempDir, 'target');
+            fs.symlinkSync(
+                path.join(tempDir, 'non-existent'),
+                targetDir,
+                'dir'
+            );
+
+            expect(verifySymlink(targetDir)).toBe(false);
+        });
+
+        it('should return false for a link to a regular file', () => {
+            const filePath = path.join(tempDir, 'regular-file.txt');
+            fs.writeFileSync(filePath, 'test content');
+            const targetDir = path.join(tempDir, 'target');
+            fs.symlinkSync(filePath, targetDir);
+
+            expect(verifySymlink(targetDir)).toBe(false);
+            expect(verifySymlink(filePath)).toBe(false);
         });
     });
 
@@ -380,6 +360,16 @@ describe('verifySkillFiles', () => {
             fs.writeFileSync(filePath, 'just a file');
 
             expect(verifySkillFiles(filePath)).toBe(false);
+        });
+
+        it('should return false for a link to a folder, which is not a copy', () => {
+            const sourceDir = path.join(tempDir, 'source');
+            fs.mkdirSync(sourceDir);
+            fs.writeFileSync(path.join(sourceDir, 'SKILL.md'), '# Skill');
+            const linked = path.join(tempDir, 'linked');
+            fs.symlinkSync(sourceDir, linked, 'dir');
+
+            expect(verifySkillFiles(linked)).toBe(false);
         });
 
         it('should return false when SKILL.md is empty', () => {
@@ -476,7 +466,7 @@ describe('verifyInstallation integration', () => {
     });
 
     describe('symlink method with real files', () => {
-        it('should return verified=true for directory with symlinked SKILL.md', () => {
+        it('should return verified=true for a link to the skill folder', () => {
             const sourceDir = path.join(tempDir, 'source-skill');
             const targetDir = path.join(tempDir, 'linked-skill');
 
@@ -485,12 +475,7 @@ describe('verifyInstallation integration', () => {
                 path.join(sourceDir, 'SKILL.md'),
                 '# Source Skill'
             );
-
-            fs.mkdirSync(targetDir);
-            fs.symlinkSync(
-                path.join(sourceDir, 'SKILL.md'),
-                path.join(targetDir, 'SKILL.md')
-            );
+            fs.symlinkSync(sourceDir, targetDir, 'dir');
 
             const result = {
                 skillName: 'linked-skill',
@@ -507,12 +492,31 @@ describe('verifyInstallation integration', () => {
             expect(verification.error).toBeUndefined();
         });
 
-        it('should return verified=false for directory with broken SKILL.md symlink', () => {
-            const targetDir = path.join(tempDir, 'broken-skill');
+        it('checks a folder a symlink install copied as a copy', () => {
+            const targetDir = path.join(tempDir, 'adapted-skill');
             fs.mkdirSync(targetDir);
+            fs.writeFileSync(path.join(targetDir, 'SKILL.md'), '# Adapted');
+            const result = {
+                skillName: 'adapted-skill',
+                agent: 'codex',
+                success: true,
+                targetPath: targetDir,
+                layout: 'copy',
+            };
+
+            expect(verifyInstallation(result, 'symlink').verified).toBe(true);
+            expect(
+                verifyInstallation({ ...result, layout: 'link' }, 'symlink')
+                    .verified
+            ).toBe(false);
+        });
+
+        it('should return verified=false for a link that does not resolve', () => {
+            const targetDir = path.join(tempDir, 'broken-skill');
             fs.symlinkSync(
-                path.join(tempDir, 'non-existent', 'SKILL.md'),
-                path.join(targetDir, 'SKILL.md')
+                path.join(tempDir, 'non-existent'),
+                targetDir,
+                'dir'
             );
 
             const result = {
@@ -528,12 +532,13 @@ describe('verifyInstallation integration', () => {
             expect(verification.error).toContain('Symlink verification failed');
         });
 
-        it('should return verified=false for directory without SKILL.md', () => {
-            const targetDir = path.join(tempDir, 'no-skill-md');
+        it('should return verified=false for a real directory', () => {
+            const targetDir = path.join(tempDir, 'no-link');
             fs.mkdirSync(targetDir);
+            fs.writeFileSync(path.join(targetDir, 'SKILL.md'), '# Not linked');
 
             const result = {
-                skillName: 'no-skill-md',
+                skillName: 'no-link',
                 agent: 'kiro',
                 success: true,
                 targetPath: targetDir,

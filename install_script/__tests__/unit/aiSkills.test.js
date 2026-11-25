@@ -30,6 +30,7 @@ import {
     updateAiSkills,
     buildAiStatusRows,
     writeAgentFiles,
+    copyFor,
     EXCLUDED_AI_DOMAINS,
 } from '../../lib/aiSkills.js';
 
@@ -774,7 +775,7 @@ describe('aiSkills', () => {
             );
         });
 
-        it('re-links changed skills for symlink installs, with a real adapted SKILL.md for every agent but Claude Code', async () => {
+        it('re-links changed skills for symlink installs: a link to the folder for Claude Code, a copy with its own SKILL.md for every other agent', async () => {
             scaffoldSubmodule(tempDir, UPSTREAM_LAYOUT);
             const planDir = makeSkill(
                 tempDir,
@@ -806,21 +807,30 @@ describe('aiSkills', () => {
             );
 
             expect(result.updated).toEqual(['ai-plan']);
-            // A file the skill gained since the install gets its link.
+            // Both hold the file the skill gained since the install.
             for (const base of [kiroBase, claudeBase]) {
-                const added = path.join(
-                    base,
-                    'ai-plan',
-                    'references',
-                    'added.md'
-                );
-                expect(fs.lstatSync(added).isSymbolicLink()).toBe(true);
-                expect(fs.readFileSync(added, 'utf8')).toBe('added upstream\n');
+                expect(
+                    fs.readFileSync(
+                        path.join(base, 'ai-plan', 'references', 'added.md'),
+                        'utf8'
+                    )
+                ).toBe('added upstream\n');
             }
-            // Claude Code links the source SKILL.md; Kiro has its adapted one.
-            const claudeSkillMd = path.join(claudeBase, 'ai-plan', 'SKILL.md');
-            expect(fs.lstatSync(claudeSkillMd).isSymbolicLink()).toBe(true);
-            const kiroSkillMd = path.join(kiroBase, 'ai-plan', 'SKILL.md');
+            // Claude Code's skill folder is a link to the source folder.
+            const claudeSkill = path.join(claudeBase, 'ai-plan');
+            expect(fs.lstatSync(claudeSkill).isSymbolicLink()).toBe(true);
+            expect(fs.realpathSync(claudeSkill)).toBe(fs.realpathSync(planDir));
+            // Kiro's is a copy, with its adapted SKILL.md and no links.
+            const kiroSkill = path.join(kiroBase, 'ai-plan');
+            expect(fs.lstatSync(kiroSkill).isDirectory()).toBe(true);
+            expect(
+                fs
+                    .readdirSync(kiroSkill, { recursive: true })
+                    .filter((rel) =>
+                        fs.lstatSync(path.join(kiroSkill, rel)).isSymbolicLink()
+                    )
+            ).toEqual([]);
+            const kiroSkillMd = path.join(kiroSkill, 'SKILL.md');
             expect(fs.lstatSync(kiroSkillMd).isFile()).toBe(true);
             expect(fs.readFileSync(kiroSkillMd)).toEqual(
                 plan.variants.get('kiro').get('SKILL.md')
@@ -828,6 +838,27 @@ describe('aiSkills', () => {
             // The submodule's own SKILL.md was not written through a link.
             expect(fs.readFileSync(path.join(planDir, 'SKILL.md'))).toEqual(
                 sourceSkillMd
+            );
+        });
+
+        it('refuses to write an agent’s own files into a linked skill folder', async () => {
+            scaffoldSubmodule(tempDir, UPSTREAM_LAYOUT);
+            const planDir = makeSkill(
+                tempDir,
+                'research',
+                'ai-plan',
+                skillMd('ai-plan', 'disallowed-tools: "WebFetch"\n')
+            );
+            const before = fs.readFileSync(path.join(planDir, 'SKILL.md'));
+            const plan = discoverAll(tempDir).find((s) => s.name === 'ai-plan');
+            const linked = path.join(targetRepo, 'ai-plan');
+            fs.symlinkSync(planDir, linked, 'dir');
+
+            await expect(
+                writeAgentFiles(plan, 'kiro', linked, ['kiro'])
+            ).rejects.toThrow(/is a link/);
+            expect(fs.readFileSync(path.join(planDir, 'SKILL.md'))).toEqual(
+                before
             );
         });
 
@@ -843,6 +874,9 @@ describe('aiSkills', () => {
                 updated: [],
                 newHashes: {},
                 newFolderHashes: {},
+                problems: [],
+                heldBack: [],
+                modifiedTargets: [],
             });
         });
 
@@ -858,6 +892,118 @@ describe('aiSkills', () => {
                 updated: [],
                 newHashes: {},
                 newFolderHashes: {},
+                problems: [],
+                heldBack: [],
+                modifiedTargets: [],
+            });
+        });
+
+        describe('a recorded folder of an AI skill no longer selected', () => {
+            const recorded = [
+                '.claude/skills/ai-plan',
+                '.claude/skills/ai-create',
+            ];
+            const oldSkillMd = () =>
+                fs.readFileSync(
+                    path.join(
+                        targetRepo,
+                        '.claude',
+                        'skills',
+                        'ai-create',
+                        'SKILL.md'
+                    ),
+                    'utf8'
+                );
+
+            it('is left as it is by a local install’s update, which records nothing for it', async () => {
+                scaffoldSubmodule(tempDir, UPSTREAM_LAYOUT);
+                const list = discoverAll(tempDir);
+                seedInstalled('.claude', ['ai-plan', 'ai-create']);
+
+                const result = await updateAiSkills(
+                    tempDir,
+                    targetRepo,
+                    {
+                        installMethod: 'copy',
+                        agents: ['claude'],
+                        skillHashes: { 'ai-domain-research': 'STALE' },
+                        externalSkillHashes: { 'claude/ai-plan': 'STALE' },
+                        installedTargets: recorded,
+                    },
+                    noopUi
+                );
+
+                expect(result.updated).toEqual(['ai-plan']);
+                expect(oldSkillMd()).toBe('OLD');
+                expect(Object.keys(result.newFolderHashes)).toEqual([
+                    'claude/ai-plan',
+                ]);
+                expect(result.newHashes).toEqual(
+                    await computeAiGroupHashes(['ai-plan'], list)
+                );
+            });
+
+            it('is left as it is by a local install’s update when no AI skill is selected any more', async () => {
+                scaffoldSubmodule(tempDir, UPSTREAM_LAYOUT);
+                seedInstalled('.claude', ['ai-plan', 'ai-create']);
+                const planMd = path.join(
+                    targetRepo,
+                    '.claude',
+                    'skills',
+                    'ai-plan',
+                    'SKILL.md'
+                );
+
+                // What the installer records once every AI skill is
+                // deselected: no AI digests at all.
+                const result = await updateAiSkills(
+                    tempDir,
+                    targetRepo,
+                    {
+                        installMethod: 'copy',
+                        agents: ['claude'],
+                        skillHashes: { 'lb-setup': 'x' },
+                        installedTargets: recorded,
+                    },
+                    noopUi
+                );
+
+                expect(result.updated).toEqual([]);
+                expect(result.newHashes).toEqual({});
+                expect(result.newFolderHashes).toEqual({});
+                expect(fs.readFileSync(planMd, 'utf8')).toBe('OLD');
+                expect(oldSkillMd()).toBe('OLD');
+            });
+
+            it('is left as it is by a global install’s update', async () => {
+                scaffoldSubmodule(tempDir, UPSTREAM_LAYOUT);
+                const base = seedInstalled('.claude', ['ai-plan', 'ai-create']);
+                // What LaunchBridge installed there, before the skill changed.
+                const installed = await computeContentHash(
+                    path.join(base, 'ai-plan')
+                );
+
+                const result = await updateAiSkills(
+                    tempDir,
+                    targetRepo,
+                    {
+                        installMethod: 'copy',
+                        agents: ['claude'],
+                        skills: ['lb-setup', 'ai-plan'],
+                        skillHashes: {},
+                        externalSkillHashes: { 'claude/ai-plan': installed },
+                        installedTargets: recorded,
+                    },
+                    noopUi,
+                    { scope: 'global' }
+                );
+
+                expect(result.problems).toEqual([]);
+                expect(result.updated).toEqual(['ai-plan']);
+                expect(oldSkillMd()).toBe('OLD');
+                expect(Object.keys(result.newFolderHashes)).toEqual([
+                    'claude/ai-plan',
+                ]);
             });
         });
     });
@@ -1137,6 +1283,45 @@ describe('the SKILL.md agents other than Claude Code receive', () => {
         const digest = await computeContentHash(installed);
         expect(hashes['other/ai-plan']).toBe(digest);
         expect(hashes['pi/ai-plan']).toBe(digest);
+    });
+
+    it('keeps Codex and pi apart locally, where their skills directories differ', () => {
+        expect(copyFor('codex', ['codex', 'pi'])).toBe('codex');
+        expect(copyFor('pi', ['codex', 'pi'])).toBe('pi');
+        expect(copyFor('pi', ['codex', 'pi'], 'local')).toBe('pi');
+    });
+
+    it('gives ~/.agents/skills the Codex copy when Codex and pi are both installed globally', async () => {
+        const skill = discoverExplicitOnly();
+        const list = discoverAll(tempDir);
+        const agents = ['pi', 'codex', 'other'];
+        for (const agent of agents) {
+            expect(copyFor(agent, agents, 'global')).toBe('codex');
+        }
+        // Agents that do not share a folder keep their own copy.
+        expect(copyFor('kiro', ['kiro', 'codex'], 'global')).toBe('kiro');
+        expect(copyFor('claude', ['claude', 'codex'], 'global')).toBe('claude');
+
+        const hashes = await computeAiSkillFolderHashes(
+            ['ai-plan'],
+            list,
+            agents,
+            { scope: 'global' }
+        );
+        const installed = path.join(tempDir, 'installed-global');
+        await copySkill(skill.path, installed);
+        await writeAgentFiles(skill, 'pi', installed, agents, 'global');
+        expect(fs.readFileSync(path.join(installed, 'SKILL.md'))).toEqual(
+            skill.variants.get('codex').get('SKILL.md')
+        );
+        // Codex's policy file for an explicit-only skill comes with its copy.
+        expect(
+            fs.existsSync(path.join(installed, 'agents', 'openai.yaml'))
+        ).toBe(true);
+        const digest = await computeContentHash(installed);
+        for (const agent of agents) {
+            expect(hashes[`${agent}/ai-plan`]).toBe(digest);
+        }
     });
 
     // A declaration in a form the adapter cannot read is never dropped: the

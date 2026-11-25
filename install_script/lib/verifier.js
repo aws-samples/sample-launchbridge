@@ -33,16 +33,21 @@ export function verifyInstallation(result, method) {
         };
     }
 
-    // Delegate to appropriate verification method based on installation method
+    // Delegate to the check for how the skill was installed: a symlink install
+    // copies a folder the installer writes files of its own into
+    // (installer.js skillLayout), and the result says so.
     let verified = false;
     let error;
+    const layout =
+        result.layout ??
+        (method === 'symlink' ? 'link' : method === 'copy' ? 'copy' : null);
 
-    if (method === 'symlink') {
+    if (layout === 'link') {
         verified = verifySymlink(result.targetPath);
         if (!verified) {
             error = `Symlink verification failed for ${result.targetPath}`;
         }
-    } else if (method === 'copy') {
+    } else if (layout === 'copy') {
         verified = verifySkillFiles(result.targetPath);
         if (!verified) {
             error = `Skill files verification failed for ${result.targetPath}`;
@@ -60,34 +65,27 @@ export function verifyInstallation(result, method) {
 }
 
 /**
- * Verifies that a symlink installation is valid.
- * With the new approach, we create real directories with symlinked files inside.
- * SKILL.md is a symlink, or a regular file where the installer writes one for
- * the agent (an AI skill's adapted SKILL.md for every agent but Claude Code).
+ * Verifies that a symlink installation is valid: the skill folder is one link
+ * (a junction on Windows) to a folder whose SKILL.md is a readable regular
+ * file. Agents skip a skill whose SKILL.md is itself a link (Codex does).
  * @param {string} skillPath - Path to the skill directory
  * @returns {boolean}
  */
 export function verifySymlink(skillPath) {
     try {
-        // 1. Check that the path exists and is a directory
-        const stats = fs.lstatSync(skillPath);
-        if (!stats.isDirectory()) {
+        // 1. The skill folder is a link to a folder
+        if (!fs.lstatSync(skillPath).isSymbolicLink()) {
+            return false;
+        }
+        if (!fs.statSync(skillPath).isDirectory()) {
             return false;
         }
 
-        // 2. Verify that SKILL.md exists and is a symlink or a regular file
+        // 2. Its SKILL.md is a regular file that can be read
         const skillMdPath = `${skillPath}/SKILL.md`;
-        if (!fs.existsSync(skillMdPath)) {
+        if (!fs.lstatSync(skillMdPath).isFile()) {
             return false;
         }
-
-        const skillMdStats = fs.lstatSync(skillMdPath);
-        if (!skillMdStats.isSymbolicLink() && !skillMdStats.isFile()) {
-            return false;
-        }
-
-        // 3. Verify the symlink target is accessible (file exists and readable)
-        fs.statSync(skillMdPath);
         fs.accessSync(skillMdPath, fs.constants.R_OK);
 
         return true;
@@ -110,7 +108,8 @@ export function verifySkillFiles(skillPath) {
             return false;
         }
 
-        const stats = fs.statSync(skillPath);
+        // A copy is a real folder, not a link to one.
+        const stats = fs.lstatSync(skillPath);
         if (!stats.isDirectory()) {
             return false;
         }
@@ -123,8 +122,8 @@ export function verifySkillFiles(skillPath) {
             return false;
         }
 
-        // 3. Check that SKILL.md is readable (not empty or corrupted)
-        const skillMdStats = fs.statSync(skillMdPath);
+        // 3. Check that SKILL.md is a readable regular file (not empty)
+        const skillMdStats = fs.lstatSync(skillMdPath);
         if (!skillMdStats.isFile()) {
             return false;
         }

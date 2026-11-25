@@ -8,6 +8,8 @@ import {
     displayFinalReport,
     displayProgress,
     getExitCode,
+    buildLifecycleReport,
+    displayLifecycleReport,
 } from '../../lib/reporter.js';
 
 describe('Reporter Module', () => {
@@ -88,6 +90,52 @@ describe('Reporter Module', () => {
                 output.includes('Copy') || output.includes('copy'),
                 'Should include copy method'
             );
+        });
+
+        it('lists each skills folder once with the agents that use it', () => {
+            displaySummary({
+                agents: ['codex', 'pi', 'kiro'],
+                scope: 'global',
+                method: 'copy',
+                sourcePath: '/src',
+                skills: ['lb-setup'],
+                targets: [
+                    { agent: 'codex', path: '/home/u/.agents/skills' },
+                    { agent: 'pi', path: '/home/u/.agents/skills' },
+                    {
+                        agent: 'kiro',
+                        path: '/home/u/.kiro/skills',
+                        realPath: '/home/u/dotfiles/kiro/skills',
+                    },
+                ],
+            });
+            const output = consoleOutput.join('\n');
+
+            assert.ok(output.includes('/home/u/.agents/skills (Codex, Pi)'));
+            assert.ok(
+                output.includes(
+                    '/home/u/.kiro/skills → /home/u/dotfiles/kiro/skills (Kiro)'
+                )
+            );
+            assert.ok(
+                output.includes('lb-setup creates .lb_workspace'),
+                'A global install says it leaves the repository alone'
+            );
+        });
+
+        it('does not describe repository setup for a local install', () => {
+            displaySummary({
+                agents: ['claude'],
+                scope: 'local',
+                method: 'copy',
+                sourcePath: '/src',
+                skills: ['lb-setup'],
+                targets: [{ agent: 'claude', path: '/repo/.claude/skills' }],
+            });
+            const output = consoleOutput.join('\n');
+
+            assert.ok(output.includes('/repo/.claude/skills (Claude Code)'));
+            assert.ok(!output.includes('lb-setup creates .lb_workspace'));
         });
 
         it('should handle empty skills array', () => {
@@ -520,6 +568,61 @@ describe('Reporter Module', () => {
                 exitCode,
                 1,
                 'Should return 1 when there are failures regardless of skipped'
+            );
+        });
+    });
+
+    describe('buildLifecycleReport', () => {
+        let consoleOutput;
+        let originalLog;
+
+        beforeEach(() => {
+            consoleOutput = [];
+            originalLog = console.log;
+            console.log = (...args) => {
+                consoleOutput.push(args.join(' '));
+            };
+        });
+
+        afterEach(() => {
+            console.log = originalLog;
+        });
+
+        const decision = {
+            scenario: 'incremental_update',
+            skillsToInstall: [],
+            skillsToReset: [],
+            skillsToRemove: ['testing-framework', 'ai-domain-research'],
+            skillsUnchanged: ['lb-setup'],
+            resetVenvSetup: false,
+            resetMcpSetup: false,
+            resetAgentsMerge: false,
+        };
+        const nothing = { successful: [], failed: [], skipped: [] };
+
+        it('counts the folders the run removed, not the skills deselected', () => {
+            const kept = buildLifecycleReport(nothing, decision, {
+                removed: [],
+            });
+            assert.deepStrictEqual(kept.removed, []);
+            displayLifecycleReport(kept);
+            assert.ok(
+                !consoleOutput.join('\n').includes('removed'),
+                'Nothing was removed'
+            );
+
+            consoleOutput = [];
+            const removed = buildLifecycleReport(nothing, decision, {
+                removed: ['testing-framework', 'testing-framework'],
+            });
+            displayLifecycleReport(removed);
+            assert.ok(consoleOutput.join('\n').includes('2 removed'));
+        });
+
+        it('falls back to the skills the decision removes', () => {
+            assert.deepStrictEqual(
+                buildLifecycleReport(nothing, decision).removed,
+                ['testing-framework', 'ai-domain-research']
             );
         });
     });

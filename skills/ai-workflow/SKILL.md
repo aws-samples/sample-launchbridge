@@ -109,9 +109,16 @@ The SDD artifacts live where the SDD skills put them: `<output_root>/` (default 
    - `.codex/skills`
    - `.roo/skills`
 
+   Then, for a global install, the same agents' skills directories in the user's home folder, in this order (again the paths as written, never resolved):
+   - `~/.claude/skills`
+   - `~/.kiro/skills`
+   - `~/.agents/skills` (Codex, pi and other agents)
+   - `~/.cline/skills`
+   - `~/.roo/skills`
+
    Use the first directory that has `ai-create` for the remaining checks, and record which of `ai-research`, `ai-plan`, `ai-implement` and `ai-archive` are present there. Also record which of `ai-adr`, `ai-agent-context`, `ai-doc`, `ai-human-outline` and `ai-human-draft` are present: they come with the **AI Architecture Decisions**, **AI Agent Context**, **AI Software Documentation** and **AI Prose Documents** bundles, and are offered only when present. Only if no directory has `ai-create`, tell the user:
 
-   > "The SDD skills aren't installed. Re-run `launchbridge install` and select the **AI Spec-Driven Development** bundle."
+   > "The SDD skills aren't installed. Re-run `launchbridge` and select the **AI Spec-Driven Development** bundle."
 
    Then stop. If some SDD skills are missing, leave them out of the chains you offer and say why.
 
@@ -322,7 +329,7 @@ List only the chosen chain's commands under `## Steps`, and mark each `[x]` once
 
 ## Handoffs
 
-- **suggested → `indexing-and-qa`:** when the user wants context drafted from the codebase and `indexing-and-qa` is installed but not indexed (Step 2 rule). If it is not installed, mention it once as optional (`launchbridge install`, then `lb-setup`); never block on it.
+- **suggested → `indexing-and-qa`:** when the user wants context drafted from the codebase and `indexing-and-qa` is installed but not indexed (Step 2 rule). If it is not installed, mention it once as optional (run `launchbridge` again and select it, then `lb-setup`); never block on it.
 
 ## Maintenance Note
 

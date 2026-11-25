@@ -4,11 +4,16 @@
  * Unit tests for Installer Module
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
+import fsSync from 'fs';
 import path from 'path';
 import os from 'os';
-import { ensureTargetDirectory, createSymlink } from '../../lib/installer.js';
+import {
+    ensureTargetDirectory,
+    createSymlink,
+    skillLayout,
+} from '../../lib/installer.js';
 
 const isRoot = process.getuid?.() === 0;
 
@@ -210,9 +215,21 @@ describe('createSymlink', () => {
         await fs.rm(tempDir, { recursive: true, force: true });
     });
 
+    /** The skill folder is one link to the source folder, read through. */
+    async function expectFolderLink(targetLink, sourceDir) {
+        const stats = await fs.lstat(targetLink);
+        expect(stats.isSymbolicLink()).toBe(true);
+        expect(await fs.readlink(targetLink)).toBe(path.resolve(sourceDir));
+        expect(await fs.realpath(targetLink)).toBe(
+            await fs.realpath(sourceDir)
+        );
+        // SKILL.md is the source's regular file, not a link of its own
+        const skillMd = await fs.lstat(path.join(targetLink, 'SKILL.md'));
+        expect(skillMd.isFile()).toBe(true);
+    }
+
     describe('symlink creation', () => {
-        it('should create a directory with symlinked files from source to target', async () => {
-            // Create a source directory with content
+        it('links the whole skill folder to the source folder', async () => {
             const sourceDir = path.join(tempDir, 'source-skill');
             await fs.mkdir(sourceDir);
             await fs.writeFile(
@@ -224,19 +241,7 @@ describe('createSymlink', () => {
 
             await createSymlink(sourceDir, targetLink);
 
-            // Verify target directory was created (not a symlink)
-            const stats = await fs.lstat(targetLink);
-            expect(stats.isDirectory()).toBe(true);
-
-            // Verify SKILL.md inside is a symlink pointing to source
-            const fileStats = await fs.lstat(path.join(targetLink, 'SKILL.md'));
-            expect(fileStats.isSymbolicLink()).toBe(true);
-
-            // Verify symlink points to source file
-            const linkTarget = await fs.readlink(
-                path.join(targetLink, 'SKILL.md')
-            );
-            expect(linkTarget).toBe(path.join(sourceDir, 'SKILL.md'));
+            await expectFolderLink(targetLink, sourceDir);
         });
 
         it('should allow reading files through the symlink', async () => {
@@ -269,21 +274,13 @@ describe('createSymlink', () => {
 
             await createSymlink(sourceDir, targetLink);
 
-            // Verify target is a directory
-            const stats = await fs.lstat(targetLink);
-            expect(stats.isDirectory()).toBe(true);
-
-            // Verify file inside is a symlink
-            const fileStats = await fs.lstat(path.join(targetLink, 'SKILL.md'));
-            expect(fileStats.isSymbolicLink()).toBe(true);
+            await expectFolderLink(targetLink, sourceDir);
         });
 
-        it('should recursively create subdirectories with symlinked files', async () => {
+        it('shows subfolders, and files the source gains later, through the link', async () => {
             const sourceDir = path.join(tempDir, 'source-skill');
             await fs.mkdir(sourceDir);
             await fs.writeFile(path.join(sourceDir, 'SKILL.md'), '# Test');
-
-            // Create subdirectory with files
             const refsDir = path.join(sourceDir, 'references');
             await fs.mkdir(refsDir);
             await fs.writeFile(path.join(refsDir, 'api.md'), '# API');
@@ -291,19 +288,58 @@ describe('createSymlink', () => {
             const targetLink = path.join(tempDir, 'target-skill');
 
             await createSymlink(sourceDir, targetLink);
+            await fs.writeFile(path.join(refsDir, 'added.md'), '# Added');
 
-            // Verify subdirectory is a real directory
-            const subDirStats = await fs.lstat(
-                path.join(targetLink, 'references')
-            );
-            expect(subDirStats.isDirectory()).toBe(true);
-            expect(subDirStats.isSymbolicLink()).toBe(false);
+            expect(
+                (await fs.readdir(path.join(targetLink, 'references'))).sort()
+            ).toEqual(['added.md', 'api.md']);
+        });
 
-            // Verify file in subdirectory is a symlink
-            const subFileStats = await fs.lstat(
-                path.join(targetLink, 'references', 'api.md')
+        it('makes an absolute link from a relative source path', async () => {
+            const sourceDir = path.join(tempDir, 'source-skill');
+            await fs.mkdir(sourceDir);
+            await fs.writeFile(path.join(sourceDir, 'SKILL.md'), '# Test');
+            const targetLink = path.join(tempDir, 'target-skill');
+
+            await createSymlink(
+                path.relative(process.cwd(), sourceDir),
+                targetLink
             );
-            expect(subFileStats.isSymbolicLink()).toBe(true);
+
+            await expectFolderLink(targetLink, sourceDir);
+        });
+
+        it('makes a junction on Windows, which needs no Developer Mode', async () => {
+            const sourceDir = path.join(tempDir, 'source-skill');
+            await fs.mkdir(sourceDir);
+            const targetLink = path.join(tempDir, 'target-skill');
+            const symlink = vi.spyOn(fs, 'symlink').mockResolvedValue();
+            try {
+                await createSymlink(sourceDir, targetLink, {
+                    platform: 'win32',
+                });
+                expect(symlink).toHaveBeenCalledWith(
+                    path.resolve(sourceDir),
+                    targetLink,
+                    'junction'
+                );
+            } finally {
+                symlink.mockRestore();
+            }
+        });
+
+        it('refuses a source that is missing or not a folder', async () => {
+            const missing = path.join(tempDir, 'missing');
+            await expect(
+                createSymlink(missing, path.join(tempDir, 'a'))
+            ).rejects.toThrow(/Source path does not exist/);
+
+            const file = path.join(tempDir, 'file.md');
+            await fs.writeFile(file, '# not a folder');
+            await expect(
+                createSymlink(file, path.join(tempDir, 'b'))
+            ).rejects.toThrow(/Source path is not a directory/);
+            await expect(fs.lstat(path.join(tempDir, 'b'))).rejects.toThrow();
         });
     });
 
@@ -418,73 +454,48 @@ describe('createSymlink', () => {
     });
 
     describe('path handling', () => {
-        it('should handle paths with spaces', async () => {
-            const sourceDir = path.join(tempDir, 'source skill');
+        it.each([
+            ['paths with spaces', 'source skill', 'target skill'],
+            [
+                'paths with special characters',
+                'source-skill_v1',
+                'target-skill_v1',
+            ],
+            [
+                '.kiro style hidden directories',
+                'source-skill',
+                '.kiro/skills/my-skill',
+            ],
+            [
+                '.claude style hidden directories',
+                'source-skill',
+                '.claude/skills/my-skill',
+            ],
+        ])('should handle %s', async (_label, source, target) => {
+            const sourceDir = path.join(tempDir, source);
             await fs.mkdir(sourceDir);
             await fs.writeFile(path.join(sourceDir, 'SKILL.md'), '# Test');
 
-            const targetLink = path.join(tempDir, 'target skill');
+            const targetLink = path.join(tempDir, ...target.split('/'));
+            await fs.mkdir(path.dirname(targetLink), { recursive: true });
 
             await createSymlink(sourceDir, targetLink);
 
-            const stats = await fs.lstat(targetLink);
-            expect(stats.isDirectory()).toBe(true);
-
-            const fileStats = await fs.lstat(path.join(targetLink, 'SKILL.md'));
-            expect(fileStats.isSymbolicLink()).toBe(true);
+            await expectFolderLink(targetLink, sourceDir);
         });
+    });
+});
 
-        it('should handle paths with special characters', async () => {
-            const sourceDir = path.join(tempDir, 'source-skill_v1');
-            await fs.mkdir(sourceDir);
-            await fs.writeFile(path.join(sourceDir, 'SKILL.md'), '# Test');
+describe('skillLayout', () => {
+    it('links a symlink install and copies a copy install', () => {
+        expect(skillLayout('symlink')).toBe('link');
+        expect(skillLayout('copy')).toBe('copy');
+    });
 
-            const targetLink = path.join(tempDir, 'target-skill_v1');
-
-            await createSymlink(sourceDir, targetLink);
-
-            const stats = await fs.lstat(targetLink);
-            expect(stats.isDirectory()).toBe(true);
-
-            const fileStats = await fs.lstat(path.join(targetLink, 'SKILL.md'));
-            expect(fileStats.isSymbolicLink()).toBe(true);
-        });
-
-        it('should handle .kiro style hidden directories', async () => {
-            const sourceDir = path.join(tempDir, 'source-skill');
-            await fs.mkdir(sourceDir);
-            await fs.writeFile(path.join(sourceDir, 'SKILL.md'), '# Test');
-
-            const kiroDir = path.join(tempDir, '.kiro', 'skills');
-            await fs.mkdir(kiroDir, { recursive: true });
-            const targetLink = path.join(kiroDir, 'my-skill');
-
-            await createSymlink(sourceDir, targetLink);
-
-            const stats = await fs.lstat(targetLink);
-            expect(stats.isDirectory()).toBe(true);
-
-            const fileStats = await fs.lstat(path.join(targetLink, 'SKILL.md'));
-            expect(fileStats.isSymbolicLink()).toBe(true);
-        });
-
-        it('should handle .claude style hidden directories', async () => {
-            const sourceDir = path.join(tempDir, 'source-skill');
-            await fs.mkdir(sourceDir);
-            await fs.writeFile(path.join(sourceDir, 'SKILL.md'), '# Test');
-
-            const claudeDir = path.join(tempDir, '.claude', 'skills');
-            await fs.mkdir(claudeDir, { recursive: true });
-            const targetLink = path.join(claudeDir, 'my-skill');
-
-            await createSymlink(sourceDir, targetLink);
-
-            const stats = await fs.lstat(targetLink);
-            expect(stats.isDirectory()).toBe(true);
-
-            const fileStats = await fs.lstat(path.join(targetLink, 'SKILL.md'));
-            expect(fileStats.isSymbolicLink()).toBe(true);
-        });
+    it('copies a folder the installer writes files of its own into, in a symlink install too', () => {
+        const own = new Map([['SKILL.md', Buffer.from('# adapted')]]);
+        expect(skillLayout('symlink', own)).toBe('copy');
+        expect(skillLayout('symlink', new Map())).toBe('link');
     });
 });
 
@@ -878,6 +889,74 @@ describe('copySkill', () => {
                 path.join(targetDir, 'empty-dir')
             );
             expect(contents).toHaveLength(0);
+        });
+    });
+
+    describe('onCreate', () => {
+        async function makeSource() {
+            const sourceDir = path.join(tempDir, 'source-skill');
+            await fs.mkdir(path.join(sourceDir, 'references', 'deeper'), {
+                recursive: true,
+            });
+            await fs.writeFile(path.join(sourceDir, 'SKILL.md'), '# Skill');
+            await fs.writeFile(
+                path.join(sourceDir, 'references', 'deeper', 'a.md'),
+                'a'
+            );
+            return sourceDir;
+        }
+
+        it('is called once, when the copy has made its own folder', async () => {
+            const sourceDir = await makeSource();
+            const targetDir = path.join(tempDir, 'target-skill');
+            const seen = [];
+
+            await copySkill(sourceDir, targetDir, {
+                onCreate: () => seen.push(fsSync.readdirSync(targetDir)),
+            });
+
+            expect(seen).toEqual([[]]);
+        });
+
+        it('has been called when the copy fails part-way', async () => {
+            const sourceDir = await makeSource();
+            await fs.symlink('missing', path.join(sourceDir, 'zz-broken'));
+            let calls = 0;
+
+            await expect(
+                copySkill(sourceDir, path.join(tempDir, 'target-skill'), {
+                    allowedRoot: tempDir,
+                    onCreate: () => calls++,
+                })
+            ).rejects.toThrow(/Broken symlink/);
+            expect(calls).toBe(1);
+        });
+
+        it('is not called when the copy makes nothing', async () => {
+            const sourceDir = await makeSource();
+            const existing = path.join(tempDir, 'someone-elses');
+            await fs.mkdir(existing);
+            let calls = 0;
+            const onCreate = () => calls++;
+
+            await expect(
+                copySkill(sourceDir, existing, { onCreate })
+            ).rejects.toThrow(/Target path already exists/);
+            await expect(
+                copySkill(
+                    path.join(tempDir, 'missing'),
+                    path.join(tempDir, 't'),
+                    {
+                        onCreate,
+                    }
+                )
+            ).rejects.toThrow(/Source path does not exist/);
+            await expect(
+                copySkill(sourceDir, path.join(tempDir, 'no-parent', 't'), {
+                    onCreate,
+                })
+            ).rejects.toThrow(/Failed to create directory/);
+            expect(calls).toBe(0);
         });
     });
 });

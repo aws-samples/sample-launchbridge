@@ -11,7 +11,7 @@
 
 LaunchBridge is a suite of AI agent skills installed into any codebase to give your coding agent deep, persistent understanding of that project. The core idea: instead of re-explaining your codebase every session, LaunchBridge indexes it once and updates as needed, so your agent always has context, coding guardrails, and tooling ready to go.
 
-It ships as a CLI installer (`launchbridge`) that copies or symlinks the skills into a target repo for Kiro, Claude Code, or any compatible agent. Once added to a target project, the skills work together across a full development lifecycle:
+It ships as a CLI installer (`launchbridge`) that copies or symlinks the skills for Kiro, Claude Code, or any compatible agent: globally, into each agent's user-level skills folder so every project can use them (the default), or locally, into one target repo. Once a project is set up, the skills work together across a full development lifecycle:
 
 - **Understand** — `indexing-and-qa` indexes source files and project documents (PDFs, decks, meeting notes) into queryable summaries via an MCP server
 - **Govern** — `code-guardrails` generates project context, scope, and best-practice files that keep the agent aligned with your architecture
@@ -33,17 +33,19 @@ The skill installer CLI helps you install LaunchBridge skills into your target r
 npm install -g github:aws-samples/sample-launchbridge
 ```
 
-Then, in each repository you want to add the skills to:
+Then run it once, from any folder, and keep the default scope, **Global**:
 
 ```bash
 launchbridge
 ```
 
+The skills are now available to your agent in every project. Open your agent in a repository and run `lb-setup`, which prepares that repository the first time. To install into one repository only, run `launchbridge` in it and choose **Local** (see [Global or local](#global-or-local)).
+
 This needs Node.js 22.13 or later, npm and git (see [Prerequisites](#prerequisites)). [Option A](#option-a-install-the-command-with-npm-recommended) below explains what it sets up; [Option B](#option-b-clone-and-link-development-and-signed-releases) covers installing from a clone.
 
-For active development, use 'symlink' so edits to skills in this repo are immediately available in your target project without reinstalling.
+For active development, use 'symlink' so edits to skills in this repo are immediately available in your target project without reinstalling. A symlink install makes each skill folder a link to its folder in the LaunchBridge clone (a junction on Windows); an AI skill that an agent gets its own `SKILL.md` for is copied for that agent instead.
 
-> **Note:** Kiro IDE does not currently support symlinked skill files. If you encounter `'is not a file'` errors, reinstall using 'copy' mode instead. See [kirodotdev/Kiro#6401](https://github.com/kirodotdev/Kiro/issues/6401) for details.
+> **Note:** Codex skips a skill whose `SKILL.md` alone is a link but loads a linked skill folder ([openai/codex#15844](https://github.com/openai/codex/issues/15844)). Older Kiro IDE and Cline releases don't load skill folders that are links ([kirodotdev/Kiro#6401](https://github.com/kirodotdev/Kiro/issues/6401), [cline/cline#11113](https://github.com/cline/cline/pull/11113)): the installer warns when a symlink install is for Kiro or Cline, and if the skills don't show up there, install again with 'copy' (`--method copy`).
 
 #### Prerequisites
 
@@ -86,14 +88,13 @@ Install the `launchbridge` command once:
 npm install -g github:aws-samples/sample-launchbridge
 ```
 
-Then run it in each target repository:
+Then run it, from any folder for a global install, or in the target repository for a local one:
 
 ```bash
-cd /path/to/your-target-repo
 launchbridge
 ```
 
-The first `launchbridge` run clones `main`, with its submodules, into `~/.launchbridge` and installs its npm packages there. Every run installs from that one clone, so a symlink install links your repository's skills to `~/.launchbridge`. `launchbridge update` updates the clone once, and every repository with a symlink install sees the new skills; each repository's lb-setup then reviews the changed skills.
+The first `launchbridge` run clones `main`, with its submodules, into `~/.launchbridge` and installs its npm packages there. Every run installs from that one clone, so a symlink install links the installed skills to `~/.launchbridge`. `launchbridge update` updates the clone once, and brings a global install up to date with it; each repository picks up the changes the next time lb-setup runs there. Run it in a repository with a local install to update that install too.
 
 `~/.launchbridge` must hold only the clone. If it exists but isn't a clone of this repository, `launchbridge` stops and changes nothing.
 
@@ -113,10 +114,9 @@ cd sample-launchbridge
 npm run setup
 ```
 
-Next, navigate to your target repository and run `launchbridge` to install the skills:
+Next, run `launchbridge` to install the skills: from any folder for a global install, or in your target repository for a local one:
 
 ```bash
-cd /path/to/your-target-repo
 launchbridge
 ```
 
@@ -125,25 +125,36 @@ launchbridge
 The installer will:
 
 1. Prompt you to select which agents to install for (Kiro, Claude Code, etc.)
-2. Prompt you to choose the installation method (symlink or copy)
-3. Install all available skills to the appropriate directories
-4. Create the `.lb_workspace` folder structure for LaunchBridge
-5. Generate `.lb_workspace/config/python_deps/pyproject.toml` with the correct dependencies
+2. Prompt you to choose the scope: **Global** (default) or **Local** (the default in a folder that already has a local install)
+3. Prompt you to choose the installation method (symlink or copy)
+4. Install the skills you select into the agents' skills folders
+5. For a global install: record the install in `~/.config/launchbridge/global/` (under `$XDG_CONFIG_HOME` when that is an absolute path), and generate the files lb-setup prepares each repository from beside the record, in `generated/`. No repository is changed.
+6. For a local install: create the `.lb_workspace` folder structure in the repository and generate `.lb_workspace/config/python_deps/pyproject.toml` with the correct dependencies
 
-> **Note:** AWS credentials and profile selection are handled by `lb-setup` (the agent skill), not the CLI installer. Run `lb-setup` in your agent after installation to configure your AWS profile and complete setup.
+> **Note:** AWS credentials and profile selection are handled by `lb-setup` (the agent skill), not the CLI installer. Run `lb-setup` in your agent after installation to configure your AWS profile and complete setup. For a global install, run it in each repository you use LaunchBridge in; the first run creates `.lb_workspace/` and `.venv_lb` there.
+
+#### Global or local
+
+|                                 | Global (default)                                                                                                                                                | Local                                                                                           |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Skills                          | Each agent's user-level folder: `~/.claude/skills`, `~/.kiro/skills`, `~/.cline/skills`, `~/.roo/skills`, and `~/.agents/skills` for Codex, Pi and other agents | The repository's agent folders: `.claude/skills`, `.kiro/skills`, … (`.codex/skills` for Codex) |
+| `.lb_workspace/` and `.venv_lb` | Created by `lb-setup` in each repository, the first time it runs there, after checking the folder is safe to prepare                                            | `.lb_workspace/` created by the installer; `.venv_lb` by `lb-setup`                             |
+| Record of the install           | `~/.config/launchbridge/global/`                                                                                                                                | `.lb_workspace/config/version_manifest.json` and `skill_digests.json`                           |
+| Run `launchbridge` from         | Any folder                                                                                                                                                      | The repository                                                                                  |
+
+A local install keeps a repository self-contained (for example a delivered codebase), and a global install serves every project. Keep one of them for each repository: where a repository has a local install and you also have a global one, Claude Code and Cline run the global skills and Kiro and Roo Code the local ones, and lb-setup from the global install refuses to prepare that repository. So a global install for Claude Code or Cline doesn't combine with a local install you use from those agents: remove one of the two ([how](docs/USER_GUIDE.md#global-or-local-install)), or set the repository up from Kiro or Roo Code when its local install is for them. On Windows the global folders are under `%USERPROFILE%`. Older Kiro IDE and Cline releases don't load linked skill folders, so use copy for them if the skills don't show up (see the note above). The [User Guide](docs/USER_GUIDE.md#global-or-local-install) has the details.
 
 #### Updating LaunchBridge
 
-To pull the latest changes and sync them to your target project in one command (this updates `~/.launchbridge` if you installed with npm, or your own clone):
+To pull the latest changes and sync them in one command (this updates `~/.launchbridge` if you installed with npm, or your own clone), run it from any folder for a global install, or from your target project for a local one:
 
 ```bash
-cd /path/to/your-target-repo
 launchbridge update
 ```
 
-This fetches the current branch and shows what would change — incoming commits, changed `SKILL.md` instructions, installer files and submodule pointers — and applies it only after you confirm (default **no**; for scripted use, review the preview and run `launchbridge update --apply <commit>`). It then re-copies changed skills (for copy installs), resets their setup status, and regenerates dependencies if needed. Then open your agent and say "update launchbridge" to re-run lb-setup for the changed skills; lb-setup holds back changed skills until you have reviewed them and refreshed the digest baseline.
+This fetches the current branch and shows what would change — incoming commits, changed `SKILL.md` instructions, installer files and submodule pointers — and applies it only after you confirm (default **no**; for scripted use, review the preview and run `launchbridge update --apply <commit>`). For a global install, it then copies changed skills again (a symlink install's links already show them), restores missing ones, regenerates the files lb-setup prepares repositories from, and updates the global record; each repository picks up the changes the next time lb-setup runs there. It leaves as it is an edited copy (whether or not the skill changed), a real folder where a link should be, and an agent's skills folder that is gone as a whole. It keeps a skill, or the generated files, at the recorded version while the clone has changes that are not committed to it or to the files they are built from, and takes nothing new from the clone when git can't tell. It says which, and how to fix each. It updates a global install only from the clone that install came from. For a local install in the current folder, it re-copies changed skills (for copy installs), resets their setup status, and regenerates dependencies if needed. It exits 1 when it could not bring every install up to date. Then open your agent and say "update launchbridge" to re-run lb-setup for the changed skills; for a local install, lb-setup holds back changed skills until you have reviewed them and refreshed the digest baseline.
 
-**On a release tag.** `launchbridge update` follows the branch your clone is on. If you checked out a release tag, the clone has no branch to follow, so the command stops and shows these steps instead. To move to a newer release, verify and check out its tag, then re-run the installer in your target project:
+**On a release tag.** `launchbridge update` follows the branch your clone is on. If you checked out a release tag, the clone has no branch to follow, so the command stops and shows these steps instead. To move to a newer release, verify and check out its tag, then run the installer again: in your target project with `--scope local` for a local install, as below, or from any folder with `--scope global` for a global one:
 
 ```bash
 cd /path/to/launchbridge
@@ -152,10 +163,10 @@ git -c gpg.ssh.allowedSignersFile=~/.config/launchbridge/allowed_signers verify-
 git checkout <new-tag>
 git submodule update --init --recursive
 cd /path/to/your-target-repo
-launchbridge
+launchbridge --scope local
 ```
 
-If you need to change your skill selection or agents, `git pull` (or check out the new release tag) in the LaunchBridge clone, then re-run `launchbridge` in your target project. See [Changing Skills or Agents](docs/USER_GUIDE.md#changing-skills-or-agents).
+If you need to change your skill selection or agents, `git pull` (or check out the new release tag) in the LaunchBridge clone, then run `launchbridge` again: in your target project, choosing **Local**, for a local install, or from any folder, choosing **Global**, for a global one. See [Changing Skills or Agents](docs/USER_GUIDE.md#changing-skills-or-agents).
 
 #### Verifying a release
 
@@ -169,7 +180,7 @@ Check that the fingerprint matches the one shown on the GitHub release page, the
 ```bash
 mkdir -p ~/.config/launchbridge
 echo 'launchbridge-release namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICDEh/WIQ2rf05S0AR+Kg18OC1P1G3N7pKOK22nmReP+' > ~/.config/launchbridge/allowed_signers
-git -c gpg.ssh.allowedSignersFile=~/.config/launchbridge/allowed_signers verify-tag v1.1.0
+git -c gpg.ssh.allowedSignersFile=~/.config/launchbridge/allowed_signers verify-tag v1.3.0
 ```
 
 A good signature prints `Good "git" signature for launchbridge-release`. Do not use a tag that fails verification. `launchbridge update` shows the incoming commits for review but does not itself verify tag signatures, and `npm install -g github:…` performs no verification at all; clone and verify the tag when that matters to you.
@@ -208,12 +219,13 @@ flowchart LR
         Installer["Installer<br/>(launchbridge CLI)"]
         Agent["Coding agent<br/>(Claude Code, Kiro, Codex,<br/>Cline, Roo Code, Pi)"]
         UserCfg["User-level agent configs<br/>(Cline MCP settings,<br/>~/.codex/config.toml)"]
+        GlobalSkills["User-level skills folders<br/>(global install: ~/.claude/skills,<br/>~/.agents/skills, …)"]
         Profile["AWS profile"]
-        State["LaunchBridge state directory<br/>(~/.config/launchbridge/repos/key:<br/>venv seal, guard copy, venv ID,<br/>consent records, install source)"]
+        State["LaunchBridge state directory<br/>(~/.config/launchbridge/repos/key:<br/>venv seal, guard copy, venv ID,<br/>consent records, install source;<br/>global/: the global install record<br/>and lb-setup's generated files)"]
         Guard["Guard (lb_guard.py, sealed copy)<br/>checks .venv_lb, launcher, links,<br/>tracked files; then starts Python"]
         subgraph Target["Target repository (untrusted content)"]
             Code["Source and .project_artifacts/"]
-            Skills["Installed skills<br/>SKILL.md, AGENTS.md, CLAUDE.md"]
+            Skills["Installed skills (local install)<br/>SKILL.md, AGENTS.md, CLAUDE.md"]
             ProjCfg["Project agent MCP configs<br/>(.mcp.json, .kiro, .roo, .codex)"]
             Venv[".venv_lb and staged launcher<br/>(mcp_v1_compat.py)"]
             Scripts["Skill scripts<br/>(indexing, setup, tests)"]
@@ -243,7 +255,11 @@ flowchart LR
     Remote -->|"git clone; update: preview,<br/>then fast-forward to the shown commit"| Installer
     AISkills -->|AI skill bundles| Installer
     MetricLib -->|evaluation metrics| Installer
-    Installer -->|"writes skills, AGENTS.md, CLAUDE.md;<br/>refuses symlinked targets"| Skills
+    Installer -->|"local install: writes skills,<br/>AGENTS.md, CLAUDE.md;<br/>refuses symlinked targets"| Skills
+    Installer -->|"global install: writes skills;<br/>no repository changed"| GlobalSkills
+    Installer -->|"global install record and<br/>lb-setup's generated files"| State
+    GlobalSkills -->|instructions| Agent
+    Agent -->|"lb-setup prepares the repository<br/>(bootstrap_workspace.py: checks,<br/>then .lb_workspace/, AGENTS.md)"| Workspace
     PyPI -->|frozen constraints| Venv
     GH -->|pinned commit| Venv
     Skills -->|instructions| Agent
@@ -307,7 +323,7 @@ launchbridge/
 
 ## .lb_workspace Folder Structure
 
-The files and artifacts generated by the LaunchBridge skills and tools should go into `.lb_workspace` folders. Project artifacts (engagement documents) go into `.project_artifacts/`:
+The files and artifacts generated by the LaunchBridge skills and tools should go into `.lb_workspace` folders. Project artifacts (engagement documents) go into `.project_artifacts/`. A local install creates both when it installs; for a global install, lb-setup creates them the first time it runs in the repository:
 
 ```
 .lb_workspace/                  # Local workspace for LaunchBridge artifacts
@@ -352,7 +368,7 @@ LaunchBridge is sample code for proof-of-concept and non-production use. It was 
 
 LaunchBridge follows the [AWS Shared Responsibility Model](https://aws.amazon.com/compliance/shared-responsibility-model/). You are responsible for security _in_ the cloud, including the AWS profile and IAM permissions you run LaunchBridge with (see [AWS Credentials](#aws-credentials)), the settings of the coding agent you use (see [Recommended Agent Permissions](docs/USER_GUIDE.md#recommended-agent-permissions)), keeping dependencies up to date, and your organization's security and compliance requirements.
 
-Known, unfixed dependency advisories (details in `version.txt`): the advisories for mcp 2.1.1 are not reachable, because LaunchBridge's MCP servers run over stdio; the fixed version can't be installed until IRIS allows mcp 2.2. The optional `ai-human-pdf` skill's upstream lock file pins Pillow 12.3.0, whose image-decoder advisories are fixed only in Pillow 13; it decodes the cover logo a document names, so don't export a document that names an untrusted logo.
+Known, unfixed dependency advisory (details in `version.txt`): the optional `ai-human-pdf` skill's upstream lock file pins Pillow 12.3.0, whose image-decoder advisories are fixed only in Pillow 13; it decodes the cover logo a document names, so don't export a document that names an untrusted logo.
 
 Python dependencies are pinned to exact versions in `project_dependencies/constraints.txt`, without hashes, and lb-setup installs them with pip. pip downloads them from whatever package index your pip configuration names (`pip.conf`, `PIP_INDEX_URL`, `PIP_EXTRA_INDEX_URL`), so check that it is PyPI or a mirror you trust before running lb-setup; an extra index can serve a different package under the same name and version.
 

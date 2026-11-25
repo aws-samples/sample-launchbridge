@@ -174,6 +174,22 @@ describe.skipIf(!hasGit)('runUpdate review gate', () => {
         expect(git(source, 'rev-parse', 'HEAD')).toBe(before);
     });
 
+    it('says to choose Global for a global install and Local for a local one after checking out a newer tag', async () => {
+        git(upstream, 'tag', 'v1.0.0');
+        git(upstream, 'push', '-q', 'origin', 'v1.0.0');
+        git(source, 'fetch', '-q', '--tags', 'origin');
+        git(source, 'checkout', '-q', 'v1.0.0');
+
+        const refusal = runUpdate(source, { confirm: async () => true });
+
+        await expect(refusal).rejects.toThrow(
+            /for a global install choose Global \(or pass --scope global\)/
+        );
+        await expect(refusal).rejects.toThrow(
+            /for a local install, run it in your project and choose Local \(or pass --scope local\)/
+        );
+    });
+
     it('refuses on a detached HEAD that is not a tag', async () => {
         publish('skills/demo/SKILL.md', 'v2\n', 'remote work');
         git(source, 'checkout', '-q', '--detach');
