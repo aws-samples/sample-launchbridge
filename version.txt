@@ -26,8 +26,11 @@ Skills
 - After an update, a local install's lb-setup holds the changed skills back until you review them and refresh the digest baseline (verify_integrity.py --write-baseline)
 - Optional AI skill bundles from aws-samples/sample-ai-skills (pinned at v0.6.2), one per domain: AI Spec-Driven Development (with the ai-workflow orchestrator), AI Architecture Decisions, AI Agent Context, AI Development Process, AI Prose Documents and AI Software Documentation; the release domain is not offered
 
+Dependencies
+- Python dependencies re-frozen: IRIS moves to f874171, which allows mcp 2.2 and later, so mcp moves from 2.1.1 to 2.3.0. That fixes GHSA-qx49-fqc8-xw99 (CVE-2026-115563, the SDK's OAuth client could send credentials to an authorization server the MCP server chose) and the four mcp advisories listed for 1.2.0; none was reachable, since every MCP server LaunchBridge registers runs over stdio. 30 pins change in all, patch and minor releases; no packages are added or removed
+
 Known Dependency Advisories (not yet fixed)
-- The Python dependency set and the ai-skills pin are unchanged from 1.2.0, so its two advisories still apply: Pillow 12.3.0 in the optional ai-human-pdf skill (don't export documents that name an untrusted logo), and mcp 2.1.1 (GHSA-84m7-p3x7-pcfv, GHSA-5h93-6whr-6q8j, GHSA-w4fh-qvv9-3v23, GHSA-rwrf-2pqf-9j8j; not reachable, since every MCP server LaunchBridge registers runs over stdio and the Q&A launcher refuses IRIS's mcp_servers). See the 1.2.0 notes below for details
+- The ai-skills pin is unchanged from 1.2.0, so its Pillow 12.3.0 advisory still applies to the optional ai-human-pdf skill: don't export documents that name an untrusted logo. See the 1.2.0 notes below for details
 
 Upgrade Notes
 - Requires Node.js 22.13 or later (^22.13.0 or >=23.5.0), npm, git and Python 3.12 or later
