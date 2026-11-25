@@ -58,7 +58,7 @@ def repo(tmp_path):
 def install_globally(tmp_path, *args: str) -> subprocess.CompletedProcess:
     cwd = tmp_path / "cwd"
     cwd.mkdir(exist_ok=True)
-    result = subprocess.run(  # nosec B603 - fixed argv, shell=False
+    result = subprocess.run(  # nosec B603 B607 - fixed argv, shell=False
         ["node", str(INSTALLER_JS), "--scope", "global", *args, "--yes"],
         capture_output=True,
         text=True,
@@ -70,7 +70,7 @@ def install_globally(tmp_path, *args: str) -> subprocess.CompletedProcess:
 
 
 def install_locally(repo: Path, *args: str) -> subprocess.CompletedProcess:
-    result = subprocess.run(  # nosec B603 - fixed argv, shell=False
+    result = subprocess.run(  # nosec B603 B607 - fixed argv, shell=False
         ["node", str(INSTALLER_JS), "--scope", "local", *args, "--yes"],
         capture_output=True,
         text=True,

@@ -754,7 +754,7 @@ def test_agent_skills_dirs_mirror_the_installers_table():
         " out[k] = [v.skillsDir, v.globalSkillsDir];"
         "console.log(JSON.stringify(out));"
     )
-    result = subprocess.run(  # nosec B603 - fixed argv, shell=False
+    result = subprocess.run(  # nosec B603 B607 - fixed argv, shell=False
         ["node", "--input-type=module", "-e", script],
         capture_output=True,
         text=True,
@@ -775,7 +775,7 @@ def test_external_group_prefix_mirrors_the_installers_keyspace():
         f"import {{ AI_GROUP_PREFIX }} from {json.dumps(AI_SKILLS_JS.as_uri())};"
         "console.log(JSON.stringify(AI_GROUP_PREFIX));"
     )
-    result = subprocess.run(  # nosec B603 - fixed argv, shell=False
+    result = subprocess.run(  # nosec B603 B607 - fixed argv, shell=False
         ["node", "--input-type=module", "-e", script],
         capture_output=True,
         text=True,
@@ -795,7 +795,7 @@ def test_external_group_prefix_mirrors_the_installers_keyspace():
 
 
 def run_installer(target_repo: Path, *args) -> subprocess.CompletedProcess:
-    return subprocess.run(  # nosec B603 - fixed argv, shell=False
+    return subprocess.run(  # nosec B603 B607 - fixed argv, shell=False
         ["node", str(INSTALLER_JS), "--scope", "local", *args, "--yes"],
         capture_output=True,
         text=True,
